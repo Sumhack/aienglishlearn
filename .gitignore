@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.venv/
+
+# Env files
+.env
+.env.*
+
+# Build/artifacts
+build/
+api_lambda.zip
+*.zip
+
+# OS
+.DS_Store
+
+# Logs
+*.log
+
+# Local data
+/data/
