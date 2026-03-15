@@ -1,0 +1,47 @@
+{
+  "version": "v1",
+  "score_range": {
+    "min": 0,
+    "max": 100
+  },
+  "dimensions": [
+    {
+      "key": "fluency",
+      "weight": 0.3,
+      "description": "Flow of speech, pacing, and continuity."
+    },
+    {
+      "key": "grammar",
+      "weight": 0.25,
+      "description": "Sentence correctness and tense consistency."
+    },
+    {
+      "key": "vocabulary",
+      "weight": 0.2,
+      "description": "Word choice clarity and professional expression."
+    },
+    {
+      "key": "confidence",
+      "weight": 0.25,
+      "description": "Clarity, directness, and certainty in responses."
+    }
+  ],
+  "fast_metrics": {
+    "filler_words": [
+      "um",
+      "uh",
+      "like",
+      "actually",
+      "basically",
+      "you know",
+      "sort of",
+      "kind of"
+    ],
+    "min_words_per_answer_hint": 20
+  },
+  "report_contract": {
+    "strengths_count": 3,
+    "improvements_count": 3,
+    "practice_tasks_count": 3
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "version": "v1",
+  "persona": "professional",
+  "mode": "behavioral_interview",
+  "question_count": 5,
+  "follow_up": {
+    "enabled": true,
+    "max_per_question": 1
+  },
+  "questions": [
+    {
+      "id": 1,
+      "text": "Tell me about yourself."
+    },
+    {
+      "id": 2,
+      "text": "Describe a challenge you faced and how you handled it."
+    },
+    {
+      "id": 3,
+      "text": "Tell me about a time you worked in a team."
+    },
+    {
+      "id": 4,
+      "text": "Describe a failure and what you learned."
+    },
+    {
+      "id": 5,
+      "text": "Why should we hire you?"
+    }
+  ],
+  "follow_up_examples": [
+    "What was your role specifically?",
+    "Can you quantify the impact?",
+    "What would you do differently next time?"
+  ]
+}
