@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from dataclasses import dataclass
 
@@ -30,6 +31,8 @@ class TurnTracker:
     session_id: str
     question_text: str
     next_index: int
+    max_turns: int
+    closed: bool = False
     pending_turn_index: int | None = None
     user_ts: float | None = None
 
@@ -40,7 +43,9 @@ server = AgentServer()
 @server.rtc_session()
 async def my_agent(ctx: agents.JobContext) -> None:
     settings = get_settings()
-    curriculum = load_curriculum("professional", "behavioral_interview")
+    session_row = get_session_by_room_name(ctx.room.name)
+    persona = session_row.persona if session_row else "school_mentor"
+    curriculum = load_curriculum(persona)
     assistant_prompt = curriculum.prompts.get(
         "assistant_system_prompt",
         "You are a helpful voice AI assistant.",
@@ -51,23 +56,27 @@ async def my_agent(ctx: agents.JobContext) -> None:
     )
     questions = curriculum.questions.get("questions", [])
     first_question = questions[0]["text"] if questions else "Tell me about yourself."
-    session_row = get_session_by_room_name(ctx.room.name)
+    max_turns = curriculum.questions.get("max_turns", 10)
     turn_tracker: TurnTracker | None = None
     if session_row:
         turn_tracker = TurnTracker(
             session_id=session_row.session_id,
             question_text=first_question,
             next_index=next_turn_index(session_row.session_id),
+            max_turns=max_turns,
         )
 
+    persona_tts = curriculum.prompts.get("tts_voice") or settings.agent_tts
     session = AgentSession(
         stt=settings.agent_stt,
         llm=settings.agent_llm,
-        tts=settings.agent_tts,
+        tts=persona_tts,
     )
 
     def on_conversation_item_added(ev: ConversationItemAddedEvent) -> None:
         if not turn_tracker:
+            return
+        if turn_tracker.closed:
             return
         item = ev.item
         if getattr(item, "type", None) != "message":
@@ -88,6 +97,13 @@ async def my_agent(ctx: agents.JobContext) -> None:
             )
             turn_tracker.pending_turn_index = idx
             turn_tracker.user_ts = ev.created_at
+            if idx >= turn_tracker.max_turns:
+                turn_tracker.closed = True
+                closing = curriculum.prompts.get(
+                    "closing_prompt",
+                    "Thanks for sharing. I will prepare your summary now.",
+                )
+                asyncio.create_task(session.generate_reply(instructions=closing))
         elif item.role == "assistant" and turn_tracker.pending_turn_index is not None:
             duration_ms: int | None = None
             if turn_tracker.user_ts:

@@ -1,0 +1,59 @@
+{
+  "version": "v1",
+  "personas": {
+    "school_mentor": {
+      "question_count": 3,
+      "max_turns": 10,
+      "follow_up": {
+        "enabled": true,
+        "max_per_question": 1
+      },
+      "questions": [
+        {"id": 1, "text": "Tell me about something you enjoy learning."},
+        {"id": 2, "text": "Explain an idea you recently understood."},
+        {"id": 3, "text": "What do you want to become in the future?"}
+      ],
+      "follow_up_examples": [
+        "Can you give a simple example?",
+        "What made it interesting for you?",
+        "Why is that important to you?"
+      ]
+    },
+    "campus_recruiter": {
+      "question_count": 3,
+      "max_turns": 10,
+      "follow_up": {
+        "enabled": true,
+        "max_per_question": 1
+      },
+      "questions": [
+        {"id": 1, "text": "Tell me about yourself."},
+        {"id": 2, "text": "What is a challenge you overcame?"},
+        {"id": 3, "text": "Why should a company hire you?"}
+      ],
+      "follow_up_examples": [
+        "What was your role specifically?",
+        "Can you quantify the impact?",
+        "What would you do differently next time?"
+      ]
+    },
+    "workplace_manager": {
+      "question_count": 3,
+      "max_turns": 10,
+      "follow_up": {
+        "enabled": true,
+        "max_per_question": 1
+      },
+      "questions": [
+        {"id": 1, "text": "Present your idea briefly."},
+        {"id": 2, "text": "How would you resolve a disagreement at work?"},
+        {"id": 3, "text": "Convince me why this proposal works."}
+      ],
+      "follow_up_examples": [
+        "What is the core benefit?",
+        "Who is impacted and how?",
+        "What is the next step?"
+      ]
+    }
+  }
+}

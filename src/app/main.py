@@ -14,6 +14,7 @@ from app.services.session_service import (
     create_session,
     get_session_by_id,
     list_sessions_for_user,
+    list_personas,
     list_turns_for_session,
 )
 
@@ -25,14 +26,13 @@ class HealthResponse(BaseModel):
 
 
 class SessionStartRequest(BaseModel):
-    module_name: str = Field(default="behavioral_interview", min_length=1, max_length=120)
-    level: str = Field(default="intermediate", min_length=1, max_length=40)
+    persona: str = Field(min_length=1, max_length=120)
 
 
 class SessionStartResponse(BaseModel):
     session_id: str
     user_id: str
-    learning_module_id: str
+    persona: str
     room_name: str
     token: str
     livekit_url: str
@@ -57,7 +57,7 @@ class TurnResponse(BaseModel):
 class SessionDetailResponse(BaseModel):
     session_id: str
     user_id: str
-    learning_module_id: str
+    persona: str
     room_name: str
     status: str
     created_at: str
@@ -68,12 +68,24 @@ class SessionDetailResponse(BaseModel):
 
 class SessionListItemResponse(BaseModel):
     session_id: str
-    learning_module_id: str
+    persona: str
     room_name: str
     status: str
     created_at: str
     started_at: str | None
     ended_at: str | None
+
+
+class PersonaResponse(BaseModel):
+    module_key: str
+    module_name: str
+    display_name: str
+    role: str
+    tone: str
+    short_description: str
+    is_active: bool
+    created_at: str | None
+    updated_at: str | None
 
 
 class RegisterRequest(BaseModel):
@@ -146,8 +158,7 @@ async def start_session(
             SessionStartPayload(
                 user_id=user_id,
                 name=name,
-                module_name=payload.module_name,
-                level=payload.level,
+                persona=payload.persona,
             )
         )
     except SessionServiceError as exc:
@@ -156,7 +167,7 @@ async def start_session(
     return SessionStartResponse(
         session_id=result.session_id,
         user_id=result.user_id,
-        learning_module_id=result.learning_module_id,
+        persona=result.persona,
         room_name=result.room_name,
         token=result.token,
         livekit_url=result.livekit_url,
@@ -246,7 +257,7 @@ async def get_session(
     return SessionDetailResponse(
         session_id=session.session_id,
         user_id=session.user_id,
-        learning_module_id=session.learning_module_id,
+        persona=session.persona,
         room_name=session.room_name,
         status=session.status,
         created_at=session.created_at,
@@ -292,7 +303,7 @@ async def list_sessions(
     return [
         SessionListItemResponse(
             session_id=s.session_id,
-            learning_module_id=s.learning_module_id,
+            persona=s.persona,
             room_name=s.room_name,
             status=s.status,
             created_at=s.created_at,
@@ -300,4 +311,23 @@ async def list_sessions(
             ended_at=s.ended_at,
         )
         for s in sessions
+    ]
+
+
+@app.get("/personas", response_model=list[PersonaResponse])
+async def get_personas(active_only: bool = True) -> list[PersonaResponse]:
+    personas = list_personas(active_only=active_only)
+    return [
+        PersonaResponse(
+            module_key=p.module_key,
+            module_name=p.module_name,
+            display_name=p.display_name,
+            role=p.role,
+            tone=p.tone,
+            short_description=p.short_description,
+            is_active=p.is_active,
+            created_at=p.created_at,
+            updated_at=p.updated_at,
+        )
+        for p in personas
     ]

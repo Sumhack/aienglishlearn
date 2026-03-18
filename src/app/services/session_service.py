@@ -10,7 +10,6 @@ from boto3.dynamodb.conditions import Key
 from livekit import api
 
 from app.config import get_settings
-from app.curricula.loader import load_curriculum
 
 
 class SessionServiceError(Exception):
@@ -21,15 +20,14 @@ class SessionServiceError(Exception):
 class SessionStartPayload:
     user_id: str
     name: str
-    module_name: str
-    level: str
+    persona: str
 
 
 @dataclass(frozen=True)
 class SessionStartResult:
     session_id: str
     user_id: str
-    learning_module_id: str
+    persona: str
     room_name: str
     token: str
     livekit_url: str
@@ -41,13 +39,14 @@ class SessionStartResult:
 class SessionLookupResult:
     session_id: str
     room_name: str
+    persona: str
 
 
 @dataclass(frozen=True)
 class SessionDetail:
     session_id: str
     user_id: str
-    learning_module_id: str
+    persona: str
     room_name: str
     status: str
     created_at: str
@@ -75,12 +74,25 @@ class TurnDetail:
 class SessionListItem:
     session_id: str
     user_id: str
-    learning_module_id: str
+    persona: str
     room_name: str
     status: str
     created_at: str
     started_at: str | None
     ended_at: str | None
+
+
+@dataclass(frozen=True)
+class PersonaItem:
+    module_key: str
+    module_name: str
+    display_name: str
+    role: str
+    tone: str
+    short_description: str
+    is_active: bool
+    created_at: str | None
+    updated_at: str | None
 
 
 def _first_row(response: object) -> dict | None:
@@ -125,35 +137,15 @@ def _modules_table():
     return _dynamo_resource().Table(get_settings().aws_modules_table)
 
 
-def _upsert_learning_module(*, module_name: str, level: str) -> dict:
-    curriculum = load_curriculum("professional", "behavioral_interview")
-    config_json = {
-        "question_count": curriculum.questions.get("question_count", 5),
-        "follow_up": curriculum.questions.get("follow_up", {}),
-        "questions": curriculum.questions.get("questions", []),
-    }
-    module_key = f"{module_name}#{level}"
+def _get_learning_module(*, persona: str) -> dict:
     table = _modules_table()
-    existing = table.get_item(Key={"module_key": module_key}).get("Item")
-    if existing:
-        return existing
-
-    now = _now_utc()
-    item = {
-        "module_key": module_key,
-        "module_name": module_name,
-        "level": level,
-        "description": "Behavioral interview practice module",
-        "is_active": True,
-        "config_json": config_json,
-        "created_at": now,
-        "updated_at": now,
-    }
-    table.put_item(Item=item)
+    item = table.get_item(Key={"module_key": persona}).get("Item")
+    if not item:
+        raise SessionServiceError(f"Persona '{persona}' not found in learning_modules")
     return item
 
 
-def _create_session(*, user_id: str, learning_module_id: str) -> dict:
+def _create_session(*, user_id: str, persona: str, learning_module_id: str) -> dict:
     session_id = str(uuid4())
     room_name = f"session-{session_id}"
     now = _now_utc()
@@ -161,6 +153,7 @@ def _create_session(*, user_id: str, learning_module_id: str) -> dict:
         "session_id": session_id,
         "user_id": user_id,
         "learning_module_id": learning_module_id,
+        "persona": persona,
         "room_name": room_name,
         "status": "active",
         "created_at": now,
@@ -192,8 +185,12 @@ def _build_room_token(*, room_name: str, identity: str, name: str, session_id: s
 
 
 def create_session(payload: SessionStartPayload) -> SessionStartResult:
-    module = _upsert_learning_module(module_name=payload.module_name, level=payload.level)
-    session = _create_session(user_id=payload.user_id, learning_module_id=module["module_key"])
+    module = _get_learning_module(persona=payload.persona)
+    session = _create_session(
+        user_id=payload.user_id,
+        persona=payload.persona,
+        learning_module_id=module["module_key"],
+    )
     token = _build_room_token(
         room_name=session["room_name"],
         identity=f"user-{payload.user_id}",
@@ -204,7 +201,7 @@ def create_session(payload: SessionStartPayload) -> SessionStartResult:
     return SessionStartResult(
         session_id=session["session_id"],
         user_id=payload.user_id,
-        learning_module_id=module["module_key"],
+        persona=payload.persona,
         room_name=session["room_name"],
         token=token,
         livekit_url=settings.livekit_url,
@@ -220,7 +217,11 @@ def get_session_by_room_name(room_name: str) -> SessionLookupResult | None:
     item = _sessions_table().get_item(Key={"session_id": session_id}).get("Item")
     if not item:
         return None
-    return SessionLookupResult(session_id=item["session_id"], room_name=item["room_name"])
+    return SessionLookupResult(
+        session_id=item["session_id"],
+        room_name=item["room_name"],
+        persona=item.get("persona", ""),
+    )
 
 
 def get_session_by_id(session_id: str) -> SessionDetail | None:
@@ -230,7 +231,7 @@ def get_session_by_id(session_id: str) -> SessionDetail | None:
     return SessionDetail(
         session_id=item["session_id"],
         user_id=item["user_id"],
-        learning_module_id=item["learning_module_id"],
+        persona=item.get("persona", ""),
         room_name=item["room_name"],
         status=item["status"],
         created_at=item.get("created_at"),
@@ -282,7 +283,7 @@ def list_sessions_for_user(user_id: str, limit: int = 50) -> list[SessionListIte
             SessionListItem(
                 session_id=item["session_id"],
                 user_id=item["user_id"],
-                learning_module_id=item.get("learning_module_id", ""),
+                persona=item.get("persona", ""),
                 room_name=item.get("room_name", ""),
                 status=item.get("status", ""),
                 created_at=item.get("created_at", ""),
@@ -291,6 +292,30 @@ def list_sessions_for_user(user_id: str, limit: int = 50) -> list[SessionListIte
             )
         )
     return sessions
+
+
+def list_personas(active_only: bool = True) -> list[PersonaItem]:
+    table = _modules_table()
+    response = table.scan()
+    items = response.get("Items", [])
+    personas: list[PersonaItem] = []
+    for item in items:
+        if active_only and not item.get("is_active", True):
+            continue
+        personas.append(
+            PersonaItem(
+                module_key=item.get("module_key", ""),
+                module_name=item.get("module_name", ""),
+                display_name=item.get("display_name", ""),
+                role=item.get("role", ""),
+                tone=item.get("tone", ""),
+                short_description=item.get("short_description", ""),
+                is_active=bool(item.get("is_active", True)),
+                created_at=item.get("created_at"),
+                updated_at=item.get("updated_at"),
+            )
+        )
+    return personas
 
 
 def next_turn_index(session_id: str) -> int:
