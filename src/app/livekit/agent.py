@@ -19,7 +19,7 @@ from app.services.session_service import (
 )
 
 try:
-    from livekit.plugins import cartesia, deepgram,aws,google
+    from livekit.plugins import cartesia, deepgram,google
 except ImportError as exc:  # pragma: no cover - surfaced at runtime
     raise RuntimeError(
         "Required plugins not installed. Run: pip install livekit-plugins-deepgram livekit-plugins-cartesia"
