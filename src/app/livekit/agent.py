@@ -18,6 +18,12 @@ from app.services.session_service import (
     update_turn_reply,
 )
 
+try:
+    from livekit.plugins import cartesia, deepgram,aws,google
+except ImportError as exc:  # pragma: no cover - surfaced at runtime
+    raise RuntimeError(
+        "Required plugins not installed. Run: pip install livekit-plugins-deepgram livekit-plugins-cartesia"
+    ) from exc
 
 class Assistant(Agent):
     def __init__(self, instructions: str) -> None:
@@ -38,6 +44,26 @@ class TurnTracker:
 
 
 server = AgentServer()
+
+
+def _build_deepgram_stt(model_spec: str):
+    if not model_spec.startswith("deepgram/"):
+        return deepgram.STT()
+    payload = model_spec.removeprefix("deepgram/")
+    if ":" in payload:
+        model_name, language = payload.split(":", 1)
+        return deepgram.STT(model=model_name, language=language)
+    return deepgram.STT(model=payload)
+
+
+def _build_cartesia_tts(model_spec: str):
+    if not model_spec.startswith("cartesia/"):
+        return cartesia.TTS(model="sonic-3")
+    payload = model_spec.removeprefix("cartesia/")
+    if ":" in payload:
+        model_name, voice_id = payload.split(":", 1)
+        return cartesia.TTS(model=model_name, voice=voice_id)
+    return cartesia.TTS(model=payload)
 
 
 @server.rtc_session()
@@ -68,9 +94,15 @@ async def my_agent(ctx: agents.JobContext) -> None:
 
     persona_tts = curriculum.prompts.get("tts_voice") or settings.agent_tts
     session = AgentSession(
-        stt=settings.agent_stt,
-        llm=settings.agent_llm,
-        tts=persona_tts,
+        stt=deepgram.STTv2(
+                model="flux-general-en",
+                eager_eot_threshold=0.4,
+                ),
+        # stt=_build_deepgram_stt(settings.agent_stt),
+        llm=google.LLM(
+        model="gemini-3-flash-preview",
+        ),
+        tts=_build_cartesia_tts(persona_tts),
     )
 
     def on_conversation_item_added(ev: ConversationItemAddedEvent) -> None:
