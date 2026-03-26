@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import urllib.request
 from dataclasses import dataclass
 
 from livekit import agents
@@ -9,20 +10,22 @@ from livekit.agents.voice.events import ConversationItemAddedEvent, MetricsColle
 
 from app.config import get_settings, validate_required_env
 from app.curricula.loader import load_curriculum
+from app.eval.fast_metrics import compute_fast_metrics
 from app.services.session_service import (
     SessionServiceError,
     add_turn_usage,
     create_turn,
     get_session_by_room_name,
     next_turn_index,
-    update_turn_reply,
+    update_turn_fast_metrics,
+    update_turn_user_transcript,
 )
 
 try:
-    from livekit.plugins import cartesia, deepgram,google
+    from livekit.plugins import cartesia, deepgram, google, sarvam
 except ImportError as exc:  # pragma: no cover - surfaced at runtime
     raise RuntimeError(
-        "Required plugins not installed. Run: pip install livekit-plugins-deepgram livekit-plugins-cartesia"
+        "Required plugins not installed. Run: pip install livekit-plugins-deepgram livekit-plugins-cartesia livekit-plugins-sarvam"
     ) from exc
 
 class Assistant(Agent):
@@ -39,8 +42,12 @@ class TurnTracker:
     next_index: int
     max_turns: int
     closed: bool = False
+    intro_sent: bool = False
+    intro_logged: bool = False
     pending_turn_index: int | None = None
-    user_ts: float | None = None
+    assistant_ts: float | None = None
+    last_assistant_index: int | None = None
+    finalize_called: bool = False
 
 
 server = AgentServer()
@@ -64,6 +71,19 @@ def _build_cartesia_tts(model_spec: str):
         model_name, voice_id = payload.split(":", 1)
         return cartesia.TTS(model=model_name, voice=voice_id)
     return cartesia.TTS(model=payload)
+
+
+def _build_sarvam_tts(speaker: str):
+    return sarvam.TTS(
+        target_language_code="hi-IN",
+        model="bulbul:v3",
+        speaker=speaker,
+        pace=1.0,
+        temperature=0.6,
+        output_audio_bitrate="128k",
+        min_buffer_size=50,
+        max_chunk_length=150,
+    )
 
 
 @server.rtc_session()
@@ -93,17 +113,57 @@ async def my_agent(ctx: agents.JobContext) -> None:
         )
 
     persona_tts = curriculum.prompts.get("tts_voice") or settings.agent_tts
+    # if persona_tts.startswith("sarvam:"):
+    #     tts_engine = _build_sarvam_tts(persona_tts.removeprefix("sarvam:"))
+    # else:
+    #     tts_engine = _build_cartesia_tts(persona_tts)
     session = AgentSession(
+        # stt=sarvam.STT(
+        #         language="en-IN",
+        #         model="saaras:v3",
+        #         mode="transcribe",  # default
+        #     ),
+        # stt=deepgram.STT(
+        #     model="nova-3",
+        #     language="en",
+        #         )
+        # stt=_build_deepgram_stt(settings.agent_stt),
         stt=deepgram.STTv2(
                 model="flux-general-en",
                 eager_eot_threshold=0.4,
                 ),
-        # stt=_build_deepgram_stt(settings.agent_stt),
         llm=google.LLM(
         model="gemini-3-flash-preview",
         ),
         tts=_build_cartesia_tts(persona_tts),
     )
+
+    async def _finalize_session(reason: str) -> None:
+        if not turn_tracker:
+            return
+        if not settings.backend_base_url:
+            logging.warning("Finalize skipped (%s): BACKEND_BASE_URL not set", reason)
+            return
+        url = f"{settings.backend_base_url.rstrip('/')}/sessions/{turn_tracker.session_id}/finalize"
+        headers = {"Content-Type": "application/json"}
+        if settings.internal_api_key:
+            headers["X-Internal-Key"] = settings.internal_api_key
+
+        def _do_request() -> None:
+            req = urllib.request.Request(url, method="POST", headers=headers)
+            with urllib.request.urlopen(req, timeout=30):
+                return
+
+        try:
+            await asyncio.to_thread(_do_request)
+        except Exception:
+            logging.exception("Finalize call failed (%s)", reason)
+
+    def _schedule_finalize(reason: str) -> None:
+        if not turn_tracker or turn_tracker.finalize_called:
+            return
+        turn_tracker.finalize_called = True
+        asyncio.create_task(_finalize_session(reason))
 
     def on_conversation_item_added(ev: ConversationItemAddedEvent) -> None:
         if not turn_tracker:
@@ -113,22 +173,62 @@ async def my_agent(ctx: agents.JobContext) -> None:
         item = ev.item
         if getattr(item, "type", None) != "message":
             return
+        if not turn_tracker.intro_sent and item.role == "user":
+            return
 
         text = item.text_content or ""
         if not text.strip():
             return
 
-        if item.role == "user":
+        if item.role == "assistant":
             idx = turn_tracker.next_index
             turn_tracker.next_index += 1
+            question_text = turn_tracker.question_text if not turn_tracker.intro_logged else ""
             create_turn(
                 session_id=turn_tracker.session_id,
                 turn_index=idx,
-                question_text=turn_tracker.question_text,
-                user_transcript=text,
+                question_text=question_text,
+                user_transcript="",
+                agent_reply=text,
             )
             turn_tracker.pending_turn_index = idx
-            turn_tracker.user_ts = ev.created_at
+            turn_tracker.assistant_ts = ev.created_at
+            turn_tracker.last_assistant_index = idx
+            if not turn_tracker.intro_logged:
+                turn_tracker.intro_sent = True
+                turn_tracker.intro_logged = True
+            return
+
+        if item.role == "user" and turn_tracker.pending_turn_index is not None:
+            idx = turn_tracker.pending_turn_index
+            duration_ms: int | None = None
+            if turn_tracker.assistant_ts:
+                duration_ms = int(max(0.0, ev.created_at - turn_tracker.assistant_ts) * 1000)
+            update_turn_user_transcript(
+                session_id=turn_tracker.session_id,
+                turn_index=idx,
+                user_transcript=text,
+                duration_ms=duration_ms,
+            )
+            turn_tracker.pending_turn_index = None
+            turn_tracker.assistant_ts = None
+            async def _persist_fast_metrics() -> None:
+                try:
+                    metrics = compute_fast_metrics(text)
+                    update_turn_fast_metrics(
+                        session_id=turn_tracker.session_id,
+                        turn_index=idx,
+                        metrics={
+                            "word_count": metrics.word_count,
+                            "filler_count": metrics.filler_count,
+                            "filler_ratio": metrics.filler_ratio,
+                            "sentence_count": metrics.sentence_count,
+                            "avg_words_per_sentence": metrics.avg_words_per_sentence,
+                        },
+                    )
+                except Exception:  # pragma: no cover - runtime logging
+                    logging.exception("fast metrics write failed")
+            asyncio.create_task(_persist_fast_metrics())
             if idx >= turn_tracker.max_turns:
                 turn_tracker.closed = True
                 closing = curriculum.prompts.get(
@@ -136,23 +236,12 @@ async def my_agent(ctx: agents.JobContext) -> None:
                     "Thanks for sharing. I will prepare your summary now.",
                 )
                 asyncio.create_task(session.generate_reply(instructions=closing))
-        elif item.role == "assistant" and turn_tracker.pending_turn_index is not None:
-            duration_ms: int | None = None
-            if turn_tracker.user_ts:
-                duration_ms = int(max(0.0, ev.created_at - turn_tracker.user_ts) * 1000)
-            update_turn_reply(
-                session_id=turn_tracker.session_id,
-                turn_index=turn_tracker.pending_turn_index,
-                agent_reply=text,
-                duration_ms=duration_ms,
-            )
-            turn_tracker.pending_turn_index = None
-            turn_tracker.user_ts = None
+                _schedule_finalize("max_turns")
 
     def on_metrics_collected(ev: MetricsCollectedEvent) -> None:
         if not turn_tracker:
             return
-        turn_index = turn_tracker.pending_turn_index or (turn_tracker.next_index - 1)
+        turn_index = turn_tracker.last_assistant_index or (turn_tracker.next_index - 1)
         if turn_index < 1:
             return
 
@@ -178,6 +267,14 @@ async def my_agent(ctx: agents.JobContext) -> None:
 
     session.on("conversation_item_added", on_conversation_item_added)
     session.on("metrics_collected", on_metrics_collected)
+
+    def on_participant_disconnected(_participant) -> None:
+        if not turn_tracker or turn_tracker.closed:
+            return
+        turn_tracker.closed = True
+        _schedule_finalize("participant_disconnected")
+
+    ctx.room.on("participant_disconnected", on_participant_disconnected)
 
     await session.start(
         room=ctx.room,

@@ -27,6 +27,10 @@ REQUIRED_ENV_BY_SCOPE = {
         "AWS_MODULES_TABLE",
         "JWT_SECRET",
     ),
+    "eval": (
+        "EVAL_PROVIDER",
+        "BEDROCK_MODEL_ID",
+    ),
 }
 
 
@@ -43,6 +47,10 @@ class Settings:
     agent_tts: str = "cartesia/sonic-3:9626c31c-bec5-4cca-baa8-f8ba9e84c8bc"
     llm_input_cost_per_1k_tokens: float = 0.0
     llm_output_cost_per_1k_tokens: float = 0.0
+    eval_provider: str = "bedrock"
+    bedrock_model_id: str = ""
+    backend_base_url: str = ""
+    internal_api_key: str = ""
     aws_region: str = ""
     aws_access_key_id: str = ""
     aws_secret_access_key: str = ""
@@ -93,6 +101,10 @@ def get_settings() -> Settings:
         llm_output_cost_per_1k_tokens=float(
             _env("LLM_OUTPUT_COST_PER_1K_TOKENS", "0")
         ),
+        eval_provider=_env("EVAL_PROVIDER", "gemini"),
+        bedrock_model_id=_env("BEDROCK_MODEL_ID", ""),
+        backend_base_url=_env("BACKEND_BASE_URL"),
+        internal_api_key=_env("INTERNAL_API_KEY"),
         aws_region=_env("AWS_REGION"),
         aws_access_key_id=_env("AWS_ACCESS_KEY_ID"),
         aws_secret_access_key=_env("AWS_SECRET_ACCESS_KEY"),

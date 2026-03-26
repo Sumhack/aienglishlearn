@@ -1,13 +1,16 @@
 from datetime import datetime, timezone
+import logging
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
-from app.config import validate_required_env
+from app.config import get_settings, validate_required_env
 from app.auth.jwt_utils import create_jwt_token, decode_jwt_token
 from app.auth.user_store import AuthUserError, create_user, verify_user
+from app.eval.deep_eval_worker import run_deep_eval
+from app.eval.prompts import build_session_eval_prompt
 from app.services.session_service import (
     SessionServiceError,
     SessionStartPayload,
@@ -15,7 +18,9 @@ from app.services.session_service import (
     get_session_by_id,
     list_sessions_for_user,
     list_personas,
+    list_turn_items,
     list_turns_for_session,
+    update_session_summary,
 )
 
 
@@ -86,6 +91,13 @@ class PersonaResponse(BaseModel):
     is_active: bool
     created_at: str | None
     updated_at: str | None
+
+
+class SessionFinalizeResponse(BaseModel):
+    session_id: str
+    report_status: str
+    scores: dict[str, float]
+    summary: dict
 
 
 class RegisterRequest(BaseModel):
@@ -331,3 +343,67 @@ async def get_personas(active_only: bool = True) -> list[PersonaResponse]:
         )
         for p in personas
     ]
+
+
+@app.post("/sessions/{session_id}/finalize", response_model=SessionFinalizeResponse)
+async def finalize_session(
+    session_id: str,
+    authorization: str | None = Header(default=None),
+    x_internal_key: str | None = Header(default=None),
+) -> SessionFinalizeResponse:
+    settings = get_settings()
+    user_id: str | None = None
+    if settings.internal_api_key and x_internal_key == settings.internal_api_key:
+        user_id = "internal"
+    else:
+        if not authorization or not authorization.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+        token = authorization.removeprefix("Bearer ").strip()
+        try:
+            claims = decode_jwt_token(token)
+        except Exception as exc:
+            raise HTTPException(status_code=401, detail="Invalid token") from exc
+
+        user_id = claims.get("sub")
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Token missing user details")
+
+    session = get_session_by_id(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if user_id != "internal" and session.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    try:
+        turn_items = list_turn_items(session_id)
+        prompt = build_session_eval_prompt(session.persona, turn_items)
+        result = run_deep_eval(prompt)
+        summary = {
+            "strengths": result.strengths,
+            "improvements": result.improvements,
+            "practice_tasks": result.practice_tasks,
+            "corrections": result.corrections,
+            "notes": result.notes,
+        }
+        update_session_summary(
+            session_id=session_id,
+            scores=result.scores,
+            summary=summary,
+            report_status="ready",
+        )
+    except Exception as exc:
+        logging.exception("Deep eval failed for session %s", session_id)
+        update_session_summary(
+            session_id=session_id,
+            scores={"overall": 0, "fluency": 0, "grammar": 0, "vocabulary": 0, "clarity": 0},
+            summary={"error": str(exc)},
+            report_status="failed",
+        )
+        raise HTTPException(status_code=500, detail=f"Deep eval failed: {exc}") from exc
+
+    return SessionFinalizeResponse(
+        session_id=session_id,
+        report_status="ready",
+        scores=result.scores,
+        summary=summary,
+    )

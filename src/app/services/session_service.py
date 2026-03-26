@@ -268,6 +268,15 @@ def list_turns_for_session(session_id: str) -> list[TurnDetail]:
     return turns
 
 
+def list_turn_items(session_id: str) -> list[dict]:
+    table = _turns_table()
+    response = table.query(
+        KeyConditionExpression=Key("session_id").eq(session_id),
+        ScanIndexForward=True,
+    )
+    return response.get("Items", [])
+
+
 def list_sessions_for_user(user_id: str, limit: int = 50) -> list[SessionListItem]:
     table = _sessions_table()
     response = table.query(
@@ -379,6 +388,46 @@ def update_turn_reply(
     )
 
 
+def update_turn_user_transcript(
+    *,
+    session_id: str,
+    turn_index: int,
+    user_transcript: str,
+    duration_ms: int | None = None,
+) -> None:
+    table = _turns_table()
+    expr = "SET user_transcript = :txt"
+    values = {":txt": user_transcript}
+    if duration_ms is not None:
+        expr += ", duration_ms = :dur"
+        values[":dur"] = duration_ms
+    table.update_item(
+        Key={"session_id": session_id, "turn_index": turn_index},
+        UpdateExpression=expr,
+        ExpressionAttributeValues=values,
+    )
+
+
+def update_turn_fast_metrics(
+    *,
+    session_id: str,
+    turn_index: int,
+    metrics: dict,
+) -> None:
+    converted: dict = {}
+    for key, value in metrics.items():
+        if isinstance(value, float):
+            converted[key] = _d(value)
+        else:
+            converted[key] = value
+    table = _turns_table()
+    table.update_item(
+        Key={"session_id": session_id, "turn_index": turn_index},
+        UpdateExpression="SET fast_metrics_json = :m",
+        ExpressionAttributeValues={":m": converted},
+    )
+
+
 def add_turn_usage(
     *,
     session_id: str,
@@ -410,5 +459,36 @@ def add_turn_usage(
             ":cost": _d(estimated_cost),
             ":model": model_name,
             ":zero": _d(0),
+        },
+    )
+
+
+def update_session_summary(
+    *,
+    session_id: str,
+    scores: dict[str, float],
+    summary: dict,
+    report_status: str,
+) -> None:
+    table = _sessions_table()
+    table.update_item(
+        Key={"session_id": session_id},
+        UpdateExpression=(
+            "SET overall_score = :overall, "
+            "fluency_score = :fluency, "
+            "grammar_score = :grammar, "
+            "vocabulary_score = :vocab, "
+            "clarity_score = :clarity, "
+            "summary_json = :summary, "
+            "report_status = :status"
+        ),
+        ExpressionAttributeValues={
+            ":overall": _d(scores.get("overall", 0)),
+            ":fluency": _d(scores.get("fluency", 0)),
+            ":grammar": _d(scores.get("grammar", 0)),
+            ":vocab": _d(scores.get("vocabulary", 0)),
+            ":clarity": _d(scores.get("clarity", 0)),
+            ":summary": summary,
+            ":status": report_status,
         },
     )
