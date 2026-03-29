@@ -122,6 +122,58 @@ Response body:
 }
 ```
 
+### `GET /sessions` (Bearer token required)
+Response body:
+
+```json
+[
+  {
+    "session_id": "uuid",
+    "persona": "school_mentor",
+    "room_name": "session-uuid",
+    "status": "active",
+    "created_at": "2026-03-25T12:00:00Z",
+    "started_at": "2026-03-25T12:00:00Z",
+    "ended_at": null,
+    "overall_score": 74,
+    "fluency_score": 70,
+    "grammar_score": 72,
+    "vocabulary_score": 76,
+    "clarity_score": 78,
+    "report_status": "ready"
+  }
+]
+```
+
+### `GET /sessions/{id}` (Bearer token required)
+Response body:
+
+```json
+{
+  "session_id": "uuid",
+  "user_id": "uuid",
+  "persona": "school_mentor",
+  "room_name": "session-uuid",
+  "status": "completed",
+  "created_at": "2026-03-25T12:00:00Z",
+  "started_at": "2026-03-25T12:00:00Z",
+  "ended_at": "2026-03-25T12:10:00Z",
+  "overall_score": 74,
+  "fluency_score": 70,
+  "grammar_score": 72,
+  "vocabulary_score": 76,
+  "clarity_score": 78,
+  "report_status": "ready",
+  "summary": {
+    "strengths": ["Clear structure", "Good pacing"],
+    "improvements": ["Reduce fillers", "Be more concise"],
+    "practice_tasks": ["Answer in STAR format"],
+    "corrections": [{"original": "...", "suggested": "..."}],
+    "notes": "Short summary"
+  }
+}
+```
+
 ## Frontend Environment Variables
 
 ```env
@@ -136,6 +188,8 @@ VITE_BACKEND_URL=http://127.0.0.1:8000
 5. Frontend stores `session_id` for UI state
 6. Frontend joins LiveKit with `livekit_url + token`
 7. Agent joins room automatically and starts voice interaction
+8. User clicks “Get Report” → `GET /sessions/{id}` to fetch summary
+9. Sessions history → `GET /sessions` for list + scores
 
 ## LiveKit Client Setup (React)
 Install:
@@ -175,7 +229,8 @@ export async function startAndJoin(persona: string, jwt: string) {
 ## Suggested UI Screens
 1. `Home`: form + “Start Session”
 2. `Call`: connected room, mic state, transcript/event placeholders
-3. `Report` (later): final score/feedback
+3. `Report`: fetch `GET /sessions/{id}` for summary + scores
+4. `History`: use `GET /sessions` for session list + scores
 
 ## Important Notes
 1. Use a fresh `/sessions/start` call for each new attempt.

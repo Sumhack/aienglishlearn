@@ -52,6 +52,13 @@ class SessionDetail:
     created_at: str
     started_at: str | None
     ended_at: str | None
+    overall_score: float | None
+    fluency_score: float | None
+    grammar_score: float | None
+    vocabulary_score: float | None
+    clarity_score: float | None
+    report_status: str | None
+    summary_json: dict | None
 
 
 @dataclass(frozen=True)
@@ -80,6 +87,12 @@ class SessionListItem:
     created_at: str
     started_at: str | None
     ended_at: str | None
+    overall_score: float | None
+    fluency_score: float | None
+    grammar_score: float | None
+    vocabulary_score: float | None
+    clarity_score: float | None
+    report_status: str | None
 
 
 @dataclass(frozen=True)
@@ -237,6 +250,13 @@ def get_session_by_id(session_id: str) -> SessionDetail | None:
         created_at=item.get("created_at"),
         started_at=item.get("started_at"),
         ended_at=item.get("ended_at"),
+        overall_score=float(item.get("overall_score", 0)) if item.get("overall_score") is not None else None,
+        fluency_score=float(item.get("fluency_score", 0)) if item.get("fluency_score") is not None else None,
+        grammar_score=float(item.get("grammar_score", 0)) if item.get("grammar_score") is not None else None,
+        vocabulary_score=float(item.get("vocabulary_score", 0)) if item.get("vocabulary_score") is not None else None,
+        clarity_score=float(item.get("clarity_score", 0)) if item.get("clarity_score") is not None else None,
+        report_status=item.get("report_status"),
+        summary_json=item.get("summary_json"),
     )
 
 
@@ -298,6 +318,12 @@ def list_sessions_for_user(user_id: str, limit: int = 50) -> list[SessionListIte
                 created_at=item.get("created_at", ""),
                 started_at=item.get("started_at"),
                 ended_at=item.get("ended_at"),
+                overall_score=float(item.get("overall_score", 0)) if item.get("overall_score") is not None else None,
+                fluency_score=float(item.get("fluency_score", 0)) if item.get("fluency_score") is not None else None,
+                grammar_score=float(item.get("grammar_score", 0)) if item.get("grammar_score") is not None else None,
+                vocabulary_score=float(item.get("vocabulary_score", 0)) if item.get("vocabulary_score") is not None else None,
+                clarity_score=float(item.get("clarity_score", 0)) if item.get("clarity_score") is not None else None,
+                report_status=item.get("report_status"),
             )
         )
     return sessions

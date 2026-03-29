@@ -12,3 +12,4 @@ passlib[argon2]~=1.7
 pyjwt~=2.10
 mangum~=0.17
 livekit-agents[sarvam]~=1.4
+livekit-agents[aws]~=1.4

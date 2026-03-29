@@ -22,7 +22,7 @@ from app.services.session_service import (
 )
 
 try:
-    from livekit.plugins import cartesia, deepgram, google, sarvam
+    from livekit.plugins import cartesia, deepgram, google, sarvam,aws
 except ImportError as exc:  # pragma: no cover - surfaced at runtime
     raise RuntimeError(
         "Required plugins not installed. Run: pip install livekit-plugins-deepgram livekit-plugins-cartesia livekit-plugins-sarvam"
@@ -132,9 +132,14 @@ async def my_agent(ctx: agents.JobContext) -> None:
                 model="flux-general-en",
                 eager_eot_threshold=0.4,
                 ),
-        llm=google.LLM(
-        model="gemini-3-flash-preview",
+        # llm=google.LLM(
+        # model="gemini-3-flash-preview",
+        # ),
+        llm=aws.LLM(
+        model="amazon.nova-pro-v1:0",
+        temperature=0.8,
         ),
+        # llm = aws.LLM(),
         tts=_build_cartesia_tts(persona_tts),
     )
 

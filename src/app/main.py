@@ -19,7 +19,6 @@ from app.services.session_service import (
     list_sessions_for_user,
     list_personas,
     list_turn_items,
-    list_turns_for_session,
     update_session_summary,
 )
 
@@ -68,7 +67,13 @@ class SessionDetailResponse(BaseModel):
     created_at: str
     started_at: str | None
     ended_at: str | None
-    turns: list[TurnResponse]
+    overall_score: float | None
+    fluency_score: float | None
+    grammar_score: float | None
+    vocabulary_score: float | None
+    clarity_score: float | None
+    report_status: str | None
+    summary: dict | None
 
 
 class SessionListItemResponse(BaseModel):
@@ -79,6 +84,12 @@ class SessionListItemResponse(BaseModel):
     created_at: str
     started_at: str | None
     ended_at: str | None
+    overall_score: float | None
+    fluency_score: float | None
+    grammar_score: float | None
+    vocabulary_score: float | None
+    clarity_score: float | None
+    report_status: str | None
 
 
 class PersonaResponse(BaseModel):
@@ -265,7 +276,6 @@ async def get_session(
     if session.user_id != user_id:
         raise HTTPException(status_code=403, detail="Forbidden")
 
-    turns = list_turns_for_session(session_id)
     return SessionDetailResponse(
         session_id=session.session_id,
         user_id=session.user_id,
@@ -275,22 +285,13 @@ async def get_session(
         created_at=session.created_at,
         started_at=session.started_at,
         ended_at=session.ended_at,
-        turns=[
-            TurnResponse(
-                turn_index=t.turn_index,
-                question_text=t.question_text,
-                user_transcript=t.user_transcript,
-                agent_reply=t.agent_reply,
-                duration_ms=t.duration_ms,
-                prompt_tokens=t.prompt_tokens,
-                completion_tokens=t.completion_tokens,
-                total_tokens=t.total_tokens,
-                model_name=t.model_name,
-                estimated_cost_usd=float(t.estimated_cost_usd),
-                created_at=t.created_at,
-            )
-            for t in turns
-        ],
+        overall_score=float(session.overall_score) if session.overall_score is not None else None,
+        fluency_score=float(session.fluency_score) if session.fluency_score is not None else None,
+        grammar_score=float(session.grammar_score) if session.grammar_score is not None else None,
+        vocabulary_score=float(session.vocabulary_score) if session.vocabulary_score is not None else None,
+        clarity_score=float(session.clarity_score) if session.clarity_score is not None else None,
+        report_status=session.report_status,
+        summary=session.summary_json,
     )
 
 
@@ -321,6 +322,12 @@ async def list_sessions(
             created_at=s.created_at,
             started_at=s.started_at,
             ended_at=s.ended_at,
+            overall_score=s.overall_score,
+            fluency_score=s.fluency_score,
+            grammar_score=s.grammar_score,
+            vocabulary_score=s.vocabulary_score,
+            clarity_score=s.clarity_score,
+            report_status=s.report_status,
         )
         for s in sessions
     ]
