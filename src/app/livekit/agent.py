@@ -132,13 +132,13 @@ async def my_agent(ctx: agents.JobContext) -> None:
                 model="flux-general-en",
                 eager_eot_threshold=0.4,
                 ),
-        # llm=google.LLM(
-        # model="gemini-3-flash-preview",
-        # ),
-        llm=aws.LLM(
-        model="amazon.nova-pro-v1:0",
-        temperature=0.8,
+        llm=google.LLM(
+        model="gemini-3-flash-preview",
         ),
+        # llm=aws.LLM(
+        # model="amazon.nova-pro-v1:0",
+        # temperature=0.8,
+        # ),
         # llm = aws.LLM(),
         tts=_build_cartesia_tts(persona_tts),
     )
