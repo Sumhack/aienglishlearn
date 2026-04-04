@@ -74,6 +74,7 @@ class SessionDetailResponse(BaseModel):
     clarity_score: float | None
     report_status: str | None
     summary: dict | None
+    recordings: dict | None
 
 
 class SessionListItemResponse(BaseModel):
@@ -141,6 +142,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 
 @app.on_event("startup")
@@ -292,6 +294,7 @@ async def get_session(
         clarity_score=float(session.clarity_score) if session.clarity_score is not None else None,
         report_status=session.report_status,
         summary=session.summary_json,
+        recordings=session.recordings_json,
     )
 
 

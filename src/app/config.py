@@ -51,6 +51,10 @@ class Settings:
     bedrock_model_id: str = ""
     backend_base_url: str = ""
     internal_api_key: str = ""
+    egress_s3_access_key: str = ""
+    egress_s3_secret_key: str = ""
+    egress_s3_bucket: str = ""
+    egress_s3_region: str = ""
     aws_region: str = ""
     aws_access_key_id: str = ""
     aws_secret_access_key: str = ""
@@ -105,6 +109,10 @@ def get_settings() -> Settings:
         bedrock_model_id=_env("BEDROCK_MODEL_ID", ""),
         backend_base_url=_env("BACKEND_BASE_URL"),
         internal_api_key=_env("INTERNAL_API_KEY"),
+        egress_s3_access_key=_env("EGRESS_S3_ACCESS_KEY"),
+        egress_s3_secret_key=_env("EGRESS_S3_SECRET_KEY"),
+        egress_s3_bucket=_env("EGRESS_S3_BUCKET"),
+        egress_s3_region=_env("EGRESS_S3_REGION"),
         aws_region=_env("AWS_REGION"),
         aws_access_key_id=_env("AWS_ACCESS_KEY_ID"),
         aws_secret_access_key=_env("AWS_SECRET_ACCESS_KEY"),

@@ -1,9 +1,9 @@
 import asyncio
 import logging
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-from livekit import agents
+from livekit import agents, rtc
 from livekit.agents import Agent, AgentServer, AgentSession
 from livekit.agents.metrics import LLMMetrics, RealtimeModelMetrics
 from livekit.agents.voice.events import ConversationItemAddedEvent, MetricsCollectedEvent
@@ -16,9 +16,11 @@ from app.services.session_service import (
     add_turn_usage,
     create_turn,
     get_session_by_room_name,
+    get_session_by_id,
     next_turn_index,
     update_turn_fast_metrics,
     update_turn_user_transcript,
+    update_session_recording,
 )
 
 try:
@@ -48,6 +50,7 @@ class TurnTracker:
     assistant_ts: float | None = None
     last_assistant_index: int | None = None
     finalize_called: bool = False
+    egress_track_ids: set[str] = field(default_factory=set)
 
 
 server = AgentServer()
@@ -170,6 +173,62 @@ async def my_agent(ctx: agents.JobContext) -> None:
         turn_tracker.finalize_called = True
         asyncio.create_task(_finalize_session(reason))
 
+    async def _start_track_egress(track_id: str, key: str, user_id: str) -> None:
+        if not turn_tracker:
+            return
+        if track_id in turn_tracker.egress_track_ids:
+            return
+        turn_tracker.egress_track_ids.add(track_id)
+        if not (
+            settings.egress_s3_access_key
+            and settings.egress_s3_secret_key
+            and settings.egress_s3_bucket
+            and settings.egress_s3_region
+        ):
+            return
+        try:
+            from livekit import api
+            from livekit.protocol import egress as lk_egress
+
+            s3 = lk_egress.S3Upload(
+                access_key=settings.egress_s3_access_key,
+                secret=settings.egress_s3_secret_key,
+                bucket=settings.egress_s3_bucket,
+                region=settings.egress_s3_region,
+            )
+            filepath = (
+                f"users/{user_id}/sessions/{turn_tracker.session_id}/{key}-{{track_id}}.ogg"
+            )
+            resolved_path = (
+                f"users/{user_id}/sessions/{turn_tracker.session_id}/{key}-{track_id}.ogg"
+            )
+            file_output = lk_egress.DirectFileOutput(
+                filepath=filepath,
+                s3=s3,
+            )
+            req = lk_egress.TrackEgressRequest(
+                room_name=ctx.room.name,
+                track_id=track_id,
+                file=file_output,
+            )
+            lkapi = api.LiveKitAPI(
+                url=settings.livekit_url,
+                api_key=settings.livekit_api_key,
+                api_secret=settings.livekit_api_secret,
+            )
+            try:
+                await lkapi.egress.start_track_egress(req)
+            finally:
+                await lkapi.aclose()
+
+            update_session_recording(
+                session_id=turn_tracker.session_id,
+                key=key,
+                value=f"s3://{settings.egress_s3_bucket}/{resolved_path}",
+            )
+        except Exception:
+            logging.exception("Failed to start egress for %s", key)
+
     def on_conversation_item_added(ev: ConversationItemAddedEvent) -> None:
         if not turn_tracker:
             return
@@ -285,6 +344,67 @@ async def my_agent(ctx: agents.JobContext) -> None:
         room=ctx.room,
         agent=Assistant(instructions=assistant_prompt),
     )
+    if turn_tracker:
+        session_detail = get_session_by_id(turn_tracker.session_id)
+        if session_detail:
+            def _start_agent_for_publication(publication) -> None:
+                if publication.kind != rtc.TrackKind.KIND_AUDIO:
+                    return
+                asyncio.create_task(
+                    _start_track_egress(
+                        track_id=publication.sid,
+                        key="agent",
+                        user_id=session_detail.user_id,
+                    )
+                )
+
+            def on_local_track_published(publication, _track) -> None:
+                _start_agent_for_publication(publication)
+
+            for publication in ctx.room.local_participant.track_publications.values():
+                _start_agent_for_publication(publication)
+
+            ctx.room.on("local_track_published", on_local_track_published)
+
+    def _start_user_for_publication(publication, participant) -> None:
+        if publication.kind != rtc.TrackKind.KIND_AUDIO:
+            return
+        identity = getattr(participant, "identity", "")
+        if not identity.startswith("user-"):
+            return
+        user_id = identity.removeprefix("user-")
+        asyncio.create_task(
+            _start_track_egress(
+                track_id=publication.sid,
+                key="user",
+                user_id=user_id,
+            )
+        )
+
+    def on_track_published(publication, remote_participant) -> None:
+        if not turn_tracker or turn_tracker.closed:
+            return
+        logging.info(
+            "track_published: identity=%s kind=%s sid=%s",
+            getattr(remote_participant, "identity", ""),
+            publication.kind,
+            publication.sid,
+        )
+        _start_user_for_publication(publication, remote_participant)
+
+    def on_participant_connected(participant) -> None:
+        if not turn_tracker or turn_tracker.closed:
+            return
+        logging.info(
+            "participant_connected: identity=%s tracks=%d",
+            getattr(participant, "identity", ""),
+            len(participant.track_publications),
+        )
+        for publication in participant.track_publications.values():
+            _start_user_for_publication(publication, participant)
+
+    ctx.room.on("track_published", on_track_published)
+    ctx.room.on("participant_connected", on_participant_connected)
 
     await session.generate_reply(
         instructions=(
@@ -292,6 +412,10 @@ async def my_agent(ctx: agents.JobContext) -> None:
             f"Then ask the first interview question exactly: '{first_question}'"
         ),
     )
+
+    if turn_tracker:
+        for participant in ctx.room.remote_participants.values():
+            on_participant_connected(participant)
 
 
 def main() -> None:

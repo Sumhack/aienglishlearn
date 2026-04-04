@@ -59,6 +59,7 @@ class SessionDetail:
     clarity_score: float | None
     report_status: str | None
     summary_json: dict | None
+    recordings_json: dict | None
 
 
 @dataclass(frozen=True)
@@ -257,6 +258,7 @@ def get_session_by_id(session_id: str) -> SessionDetail | None:
         clarity_score=float(item.get("clarity_score", 0)) if item.get("clarity_score") is not None else None,
         report_status=item.get("report_status"),
         summary_json=item.get("summary_json"),
+        recordings_json=item.get("recordings_json"),
     )
 
 
@@ -517,4 +519,26 @@ def update_session_summary(
             ":summary": summary,
             ":status": report_status,
         },
+    )
+
+
+def update_session_recording(
+    *,
+    session_id: str,
+    key: str,
+    value: str,
+) -> None:
+    table = _sessions_table()
+    # DynamoDB does not allow setting a parent and child path in the same update.
+    table.update_item(
+        Key={"session_id": session_id},
+        UpdateExpression="SET #r = if_not_exists(#r, :empty)",
+        ExpressionAttributeNames={"#r": "recordings_json"},
+        ExpressionAttributeValues={":empty": {}},
+    )
+    table.update_item(
+        Key={"session_id": session_id},
+        UpdateExpression="SET #r.#k = :v",
+        ExpressionAttributeNames={"#r": "recordings_json", "#k": key},
+        ExpressionAttributeValues={":v": value},
     )
