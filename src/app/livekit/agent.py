@@ -152,6 +152,11 @@ async def my_agent(ctx: agents.JobContext) -> None:
         if not settings.backend_base_url:
             logging.warning("Finalize skipped (%s): BACKEND_BASE_URL not set", reason)
             return
+        logging.info(
+            "Finalize start (%s): session_id=%s",
+            reason,
+            turn_tracker.session_id,
+        )
         url = f"{settings.backend_base_url.rstrip('/')}/sessions/{turn_tracker.session_id}/finalize"
         headers = {"Content-Type": "application/json"}
         if settings.internal_api_key:
@@ -159,7 +164,13 @@ async def my_agent(ctx: agents.JobContext) -> None:
 
         def _do_request() -> None:
             req = urllib.request.Request(url, method="POST", headers=headers)
-            with urllib.request.urlopen(req, timeout=30):
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                logging.info(
+                    "Finalize response (%s): session_id=%s status=%s",
+                    reason,
+                    turn_tracker.session_id,
+                    getattr(resp, "status", "unknown"),
+                )
                 return
 
         try:
@@ -171,6 +182,11 @@ async def my_agent(ctx: agents.JobContext) -> None:
         if not turn_tracker or turn_tracker.finalize_called:
             return
         turn_tracker.finalize_called = True
+        logging.info(
+            "Finalize scheduled (%s): session_id=%s",
+            reason,
+            turn_tracker.session_id,
+        )
         asyncio.create_task(_finalize_session(reason))
 
     async def _start_track_egress(track_id: str, key: str, user_id: str) -> None:
@@ -293,14 +309,14 @@ async def my_agent(ctx: agents.JobContext) -> None:
                 except Exception:  # pragma: no cover - runtime logging
                     logging.exception("fast metrics write failed")
             asyncio.create_task(_persist_fast_metrics())
-            if idx >= turn_tracker.max_turns:
-                turn_tracker.closed = True
-                closing = curriculum.prompts.get(
-                    "closing_prompt",
-                    "Thanks for sharing. I will prepare your summary now.",
-                )
-                asyncio.create_task(session.generate_reply(instructions=closing))
-                _schedule_finalize("max_turns")
+            # if idx >= turn_tracker.max_turns:
+            #     # Finalize on disconnect only for now.
+            #     turn_tracker.closed = True
+            #     closing = curriculum.prompts.get(
+            #         "closing_prompt",
+            #         "Thanks for sharing. I will prepare your summary now.",
+            #     )
+            #     asyncio.create_task(session.generate_reply(instructions=closing))
 
     def on_metrics_collected(ev: MetricsCollectedEvent) -> None:
         if not turn_tracker:
