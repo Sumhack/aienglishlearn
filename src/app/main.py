@@ -5,7 +5,7 @@ from typing import Literal
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr, Field, field_validator
-
+from app.auth.google import router as google_router
 from app.config import get_settings, validate_required_env
 from app.auth.jwt_utils import create_jwt_token, decode_jwt_token
 from app.auth.user_store import AuthUserError, create_user, verify_user
@@ -134,10 +134,10 @@ class AuthResponse(BaseModel):
 
 
 app = FastAPI(title="Voice Agent Backend", version="0.1.0")
-
+app.include_router(google_router)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "https://www.speakaura.tech",],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
