@@ -1,13 +1,20 @@
 import asyncio
 import logging
+import time
 import urllib.request
 from dataclasses import dataclass, field
 
 from livekit import agents, rtc
 from livekit.agents import Agent, AgentServer, AgentSession
+from livekit.agents.llm import ChatContext
 from livekit.agents.metrics import LLMMetrics, RealtimeModelMetrics
 from livekit.agents.voice.events import ConversationItemAddedEvent, MetricsCollectedEvent
-
+# from livekit.agents import TurnHandlingOptions
+# from livekit.agents.turn_handling import TurnHandlingOptions
+# from livekit.plugins.turn_detector.multilingual import MultilingualModel
+# from livekit.plugins import silero
+# from livekit.plugins.turn_detector.multilingual import MultilingualModel
+# from livekit.plugins import silero
 from app.config import get_settings, validate_required_env
 from app.curricula.loader import load_curriculum
 from app.eval.fast_metrics import compute_fast_metrics
@@ -52,8 +59,10 @@ class TurnTracker:
     finalize_called: bool = False
     egress_track_ids: set[str] = field(default_factory=set)
 
+# server = AgentServer()
 
-server = AgentServer()
+_warmup_done = False
+_warmup_lock = asyncio.Lock()
 
 
 def _build_deepgram_stt(model_spec: str):
@@ -89,9 +98,35 @@ def _build_sarvam_tts(speaker: str):
     )
 
 
+async def _warmup_models(llm_engine: object, tts_engine: object) -> None:
+    global _warmup_done
+    if _warmup_done:
+        return
+    async with _warmup_lock:
+        if _warmup_done:
+            return
+        try:
+            logging.info("Warmup: starting")
+            if hasattr(llm_engine, "chat"):
+                ctx = ChatContext()
+                ctx.add_message(role="user", content="Say OK.")
+                await llm_engine.chat(chat_ctx=ctx).collect()
+            if hasattr(tts_engine, "synthesize"):
+                async for _chunk in tts_engine.synthesize("OK"):
+                    pass
+            _warmup_done = True
+            logging.info("Warmup: completed")
+        except Exception:
+            logging.exception("Warmup: failed")
+
+
+server = AgentServer(num_idle_processes=1)
+
+
 @server.rtc_session()
 async def my_agent(ctx: agents.JobContext) -> None:
     settings = get_settings()
+    start_ts = time.monotonic()
     session_row = get_session_by_room_name(ctx.room.name)
     persona = session_row.persona if session_row else "school_mentor"
     curriculum = load_curriculum(persona)
@@ -120,6 +155,11 @@ async def my_agent(ctx: agents.JobContext) -> None:
     #     tts_engine = _build_sarvam_tts(persona_tts.removeprefix("sarvam:"))
     # else:
     #     tts_engine = _build_cartesia_tts(persona_tts)
+    llm_engine = google.LLM(
+        model="gemini-3-flash-preview",
+    )
+    tts_engine = _build_cartesia_tts(persona_tts)
+    # await _warmup_models(llm_engine, tts_engine)
     session = AgentSession(
         # stt=sarvam.STT(
         #         language="en-IN",
@@ -132,19 +172,26 @@ async def my_agent(ctx: agents.JobContext) -> None:
         #         )
         # stt=_build_deepgram_stt(settings.agent_stt),
         stt=deepgram.STTv2(
-                model="flux-general-en",
-                eager_eot_threshold=0.4,
-                ),
-        llm=google.LLM(
-        model="gemini-3-flash-preview",
+            model="flux-general-en",
+            eager_eot_threshold=0.4,
         ),
+        llm=llm_engine,
         # llm=aws.LLM(
         # model="amazon.nova-pro-v1:0",
         # temperature=0.8,
         # ),
         # llm = aws.LLM(),
-        tts=_build_cartesia_tts(persona_tts),
+        tts=tts_engine,
+        preemptive_generation=True,
+        use_tts_aligned_transcript=True,
+
+        # vad=silero.VAD.load(),
+
+        # turn_handling={
+        # "turn_detection": MultilingualModel(),
+    # },
     )
+    # asyncio.create_task(_warmup_models(llm_engine, tts_engine))
 
     async def _finalize_session(reason: str) -> None:
         if not turn_tracker:
@@ -275,6 +322,10 @@ async def my_agent(ctx: agents.JobContext) -> None:
             turn_tracker.assistant_ts = ev.created_at
             turn_tracker.last_assistant_index = idx
             if not turn_tracker.intro_logged:
+                logging.info(
+                    "Latency: first assistant message created at %.3fs",
+                    time.monotonic() - start_ts,
+                )
                 turn_tracker.intro_sent = True
                 turn_tracker.intro_logged = True
             return
@@ -308,6 +359,7 @@ async def my_agent(ctx: agents.JobContext) -> None:
                     )
                 except Exception:  # pragma: no cover - runtime logging
                     logging.exception("fast metrics write failed")
+                
             asyncio.create_task(_persist_fast_metrics())
             # if idx >= turn_tracker.max_turns:
             #     # Finalize on disconnect only for now.
@@ -359,7 +411,9 @@ async def my_agent(ctx: agents.JobContext) -> None:
     await session.start(
         room=ctx.room,
         agent=Assistant(instructions=assistant_prompt),
+        # record=True,
     )
+    logging.info("Latency: session.start completed in %.3fs", time.monotonic() - start_ts)
     if turn_tracker:
         session_detail = get_session_by_id(turn_tracker.session_id)
         if session_detail:
@@ -422,12 +476,14 @@ async def my_agent(ctx: agents.JobContext) -> None:
     ctx.room.on("track_published", on_track_published)
     ctx.room.on("participant_connected", on_participant_connected)
 
+    logging.info("Latency: calling initial generate_reply at %.3fs", time.monotonic() - start_ts)
     await session.generate_reply(
         instructions=(
             f"{intro_prompt} "
             f"Then ask the first interview question exactly: '{first_question}'"
         ),
     )
+    logging.info("Latency: initial generate_reply completed at %.3fs", time.monotonic() - start_ts)
 
     if turn_tracker:
         for participant in ctx.room.remote_participants.values():
