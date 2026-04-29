@@ -30,18 +30,16 @@ class AuthUserError(Exception):
 
 def _table():
     settings = get_settings()
+    region_name = settings.aws_region
     # if settings.aws_access_key_id and settings.aws_secret_access_key:
     #     resource = boto3.resource(
     #         "dynamodb",
-    #         region_name=settings.aws_region,
+    #         region_name=region_name,
     #         aws_access_key_id=settings.aws_access_key_id,
     #         aws_secret_access_key=settings.aws_secret_access_key,
     #     )
     # else:
-    resource = boto3.resource(
-            "dynamodb",
-            region_name= "ap-south-1",
-        )
+    resource = boto3.resource("dynamodb", region_name=region_name)
     return resource.Table(settings.aws_users_table)
 
 

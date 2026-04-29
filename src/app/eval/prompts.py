@@ -34,20 +34,34 @@ def build_session_eval_prompt(persona: str, turns: Iterable[dict]) -> str:
             "grammar": "0-100",
             "vocabulary": "0-100",
             "clarity": "0-100",
+            "relevance": "0-100",
         },
         "strengths": ["..."],
         "improvements": ["..."],
+        "content_improvements": [
+            {
+                "title": "...",
+                "description": "..."
+            }
+        ],
         "practice_tasks": ["..."],
         "corrections": [
-            {"original": "...", "suggested": "..."}
+            {
+                "original": "...",
+                "improved": "...",
+                "why_it_helps": "..."
+            }
         ],
-        "notes": "short summary"
+        "notes": "2-3 line neutral summary of the conversation"
     }
 
     return (
         "You are an English communication evaluator. "
         "Score the learner based on the conversation turns. "
         "Use transcript-only signals. "
+        "Focus especially on how relevant and content-rich the response is relative to the question asked. "
+        "Write notes as a short neutral summary in 2-3 lines. "
+        "Use corrections to show a better version of the response, not just grammar fixes. "
         "Return ONLY valid JSON that matches this schema exactly.\n\n"
         f"Schema: {json.dumps(schema)}\n\n"
         f"Input: {json.dumps(_coerce(payload))}"

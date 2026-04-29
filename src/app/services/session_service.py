@@ -6,7 +6,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 import boto3
-from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.conditions import Attr, Key
 from livekit import api
 
 from app.config import get_settings
@@ -28,6 +28,8 @@ class SessionStartResult:
     session_id: str
     user_id: str
     persona: str
+    display_name: str
+    coach_type: str
     room_name: str
     token: str
     livekit_url: str
@@ -47,6 +49,8 @@ class SessionDetail:
     session_id: str
     user_id: str
     persona: str
+    display_name: str
+    coach_type: str
     room_name: str
     status: str
     created_at: str
@@ -57,9 +61,10 @@ class SessionDetail:
     grammar_score: float | None
     vocabulary_score: float | None
     clarity_score: float | None
+    relevance_score: float | None
     report_status: str | None
     summary_json: dict | None
-    recordings_json: dict | None
+    # recordings_json: dict | None
 
 
 @dataclass(frozen=True)
@@ -83,6 +88,8 @@ class SessionListItem:
     session_id: str
     user_id: str
     persona: str
+    display_name: str
+    coach_type: str
     room_name: str
     status: str
     created_at: str
@@ -93,6 +100,7 @@ class SessionListItem:
     grammar_score: float | None
     vocabulary_score: float | None
     clarity_score: float | None
+    relevance_score: float | None
     report_status: str | None
 
 
@@ -101,12 +109,23 @@ class PersonaItem:
     module_key: str
     module_name: str
     display_name: str
+    coach_type: str
     role: str
     tone: str
     short_description: str
     is_active: bool
     created_at: str | None
     updated_at: str | None
+
+
+@dataclass(frozen=True)
+class PersonaV1Item:
+    module_key: str
+    coach_category: str
+    coach_type: str
+    display_name: str
+    short_description: str
+    tone: str
 
 
 def _first_row(response: object) -> dict | None:
@@ -126,17 +145,18 @@ def _d(value: float | int) -> Decimal:
 
 def _dynamo_resource():
     settings = get_settings()
+    # Allow the same codebase to run in multiple regions (India + US) by
+    # respecting `AWS_REGION` from env/config. Keep a safe default for local use.
+    region_name = settings.aws_region
+    #or "ap-south-1"
     # if settings.aws_access_key_id and settings.aws_secret_access_key:
     #     return boto3.resource(
     #         "dynamodb",
-    #         region_name=settings.aws_region,
+    #         region_nazme=region_name,
     #         aws_access_key_id=settings.aws_access_key_id,
     #         aws_secret_access_key=settings.aws_secret_access_key,
     #     )
-    return boto3.resource(
-        "dynamodb",
-        region_name= "ap-south-1",
-    )
+    return boto3.resource("dynamodb", region_name=region_name)
 
 
 def _sessions_table():
@@ -151,6 +171,10 @@ def _modules_table():
     return _dynamo_resource().Table(get_settings().aws_modules_table)
 
 
+def _personas_table():
+    return _dynamo_resource().Table(get_settings().aws_personas_table)
+
+
 def _get_learning_module(*, persona: str) -> dict:
     table = _modules_table()
     item = table.get_item(Key={"module_key": persona}).get("Item")
@@ -159,7 +183,21 @@ def _get_learning_module(*, persona: str) -> dict:
     return item
 
 
-def _create_session(*, user_id: str, persona: str, learning_module_id: str) -> dict:
+def _get_learning_module_meta(*, persona: str) -> tuple[str, str]:
+    module = _get_learning_module(persona=persona)
+    display_name = module.get("display_name") or module.get("module_name") or persona
+    coach_type = module.get("coach_type") or ""
+    return display_name, coach_type
+
+
+def _create_session(
+    *,
+    user_id: str,
+    persona: str,
+    learning_module_id: str,
+    display_name: str,
+    coach_type: str,
+) -> dict:
     session_id = str(uuid4())
     room_name = f"session-{session_id}"
     now = _now_utc()
@@ -168,6 +206,8 @@ def _create_session(*, user_id: str, persona: str, learning_module_id: str) -> d
         "user_id": user_id,
         "learning_module_id": learning_module_id,
         "persona": persona,
+        "display_name": display_name,
+        "coach_type": coach_type,
         "room_name": room_name,
         "status": "active",
         "created_at": now,
@@ -200,10 +240,14 @@ def _build_room_token(*, room_name: str, identity: str, name: str, session_id: s
 
 def create_session(payload: SessionStartPayload) -> SessionStartResult:
     module = _get_learning_module(persona=payload.persona)
+    display_name = module.get("display_name") or module.get("module_name") or payload.persona
+    coach_type = module.get("coach_type") or ""
     session = _create_session(
         user_id=payload.user_id,
         persona=payload.persona,
         learning_module_id=module["module_key"],
+        display_name=display_name,
+        coach_type=coach_type,
     )
     token = _build_room_token(
         room_name=session["room_name"],
@@ -216,6 +260,8 @@ def create_session(payload: SessionStartPayload) -> SessionStartResult:
         session_id=session["session_id"],
         user_id=payload.user_id,
         persona=payload.persona,
+        display_name=display_name,
+        coach_type=coach_type,
         room_name=session["room_name"],
         token=token,
         livekit_url=settings.livekit_url,
@@ -242,10 +288,13 @@ def get_session_by_id(session_id: str) -> SessionDetail | None:
     item = _sessions_table().get_item(Key={"session_id": session_id}).get("Item")
     if not item:
         return None
+    display_name, coach_type = _get_learning_module_meta(persona=item.get("persona", ""))
     return SessionDetail(
         session_id=item["session_id"],
         user_id=item["user_id"],
         persona=item.get("persona", ""),
+        display_name=display_name,
+        coach_type=coach_type,
         room_name=item["room_name"],
         status=item["status"],
         created_at=item.get("created_at"),
@@ -256,9 +305,10 @@ def get_session_by_id(session_id: str) -> SessionDetail | None:
         grammar_score=float(item.get("grammar_score", 0)) if item.get("grammar_score") is not None else None,
         vocabulary_score=float(item.get("vocabulary_score", 0)) if item.get("vocabulary_score") is not None else None,
         clarity_score=float(item.get("clarity_score", 0)) if item.get("clarity_score") is not None else None,
+        relevance_score=float(item.get("relevance_score", 0)) if item.get("relevance_score") is not None else None,
         report_status=item.get("report_status"),
         summary_json=item.get("summary_json"),
-        recordings_json=item.get("recordings_json"),
+        # recordings_json=item.get("recordings_json"),
     )
 
 
@@ -299,15 +349,17 @@ def list_turn_items(session_id: str) -> list[dict]:
     return response.get("Items", [])
 
 
-def list_sessions_for_user(user_id: str, limit: int = 50) -> list[SessionListItem]:
+def list_sessions_for_user(user_id: str, limit: int = 200) -> list[SessionListItem]:
     table = _sessions_table()
     response = table.query(
         IndexName="user_id_index",
         KeyConditionExpression=Key("user_id").eq(user_id),
+        FilterExpression=Attr("relevance_score").gt(_d(0)),
         ScanIndexForward=False,
-        Limit=limit,
+        # Limit=limit,
     )
     items = response.get("Items", [])
+    items.sort(key=lambda item: item.get("created_at", ""), reverse=True)
     sessions: list[SessionListItem] = []
     for item in items:
         sessions.append(
@@ -315,6 +367,8 @@ def list_sessions_for_user(user_id: str, limit: int = 50) -> list[SessionListIte
                 session_id=item["session_id"],
                 user_id=item["user_id"],
                 persona=item.get("persona", ""),
+                display_name=item.get("display_name", ""),
+                coach_type=item.get("coach_type", ""),
                 room_name=item.get("room_name", ""),
                 status=item.get("status", ""),
                 created_at=item.get("created_at", ""),
@@ -325,6 +379,7 @@ def list_sessions_for_user(user_id: str, limit: int = 50) -> list[SessionListIte
                 grammar_score=float(item.get("grammar_score", 0)) if item.get("grammar_score") is not None else None,
                 vocabulary_score=float(item.get("vocabulary_score", 0)) if item.get("vocabulary_score") is not None else None,
                 clarity_score=float(item.get("clarity_score", 0)) if item.get("clarity_score") is not None else None,
+                relevance_score=float(item.get("relevance_score", 0)) if item.get("relevance_score") is not None else None,
                 report_status=item.get("report_status"),
             )
         )
@@ -344,6 +399,7 @@ def list_personas(active_only: bool = True) -> list[PersonaItem]:
                 module_key=item.get("module_key", ""),
                 module_name=item.get("module_name", ""),
                 display_name=item.get("display_name", ""),
+                coach_type=item.get("coach_type", ""),
                 role=item.get("role", ""),
                 tone=item.get("tone", ""),
                 short_description=item.get("short_description", ""),
@@ -352,6 +408,32 @@ def list_personas(active_only: bool = True) -> list[PersonaItem]:
                 updated_at=item.get("updated_at"),
             )
         )
+    return personas
+
+
+def list_personas_v1() -> list[PersonaV1Item]:
+    table = _personas_table()
+    response = table.scan()
+    items = response.get("Items", [])
+    personas: list[PersonaV1Item] = []
+    for item in items:
+        personas.append(
+            PersonaV1Item(
+                module_key=item.get("module_key", ""),
+                coach_category=item.get("coach_category", ""),
+                coach_type=item.get("coach_type", ""),
+                display_name=item.get("display_name", ""),
+                short_description=item.get("short_description", ""),
+                tone=item.get("tone", ""),
+            )
+        )
+    personas.sort(
+        key=lambda item: (
+            item.coach_category.lower(),
+            item.display_name.lower(),
+            item.module_key.lower(),
+        )
+    )
     return personas
 
 
@@ -507,6 +589,7 @@ def update_session_summary(
             "grammar_score = :grammar, "
             "vocabulary_score = :vocab, "
             "clarity_score = :clarity, "
+            "relevance_score = :relevance, "
             "summary_json = :summary, "
             "report_status = :status"
         ),
@@ -516,6 +599,7 @@ def update_session_summary(
             ":grammar": _d(scores.get("grammar", 0)),
             ":vocab": _d(scores.get("vocabulary", 0)),
             ":clarity": _d(scores.get("clarity", 0)),
+            ":relevance": _d(scores.get("relevance", 0)),
             ":summary": summary,
             ":status": report_status,
         },
