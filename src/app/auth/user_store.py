@@ -30,18 +30,16 @@ class AuthUserError(Exception):
 
 def _table():
     settings = get_settings()
+    region_name = settings.aws_region
     # if settings.aws_access_key_id and settings.aws_secret_access_key:
     #     resource = boto3.resource(
     #         "dynamodb",
-    #         region_name=settings.aws_region,
+    #         region_name=region_name,
     #         aws_access_key_id=settings.aws_access_key_id,
     #         aws_secret_access_key=settings.aws_secret_access_key,
     #     )
     # else:
-    resource = boto3.resource(
-            "dynamodb",
-            region_name= "ap-south-1",
-        )
+    resource = boto3.resource("dynamodb", region_name=region_name)
     return resource.Table(settings.aws_users_table)
 
 
@@ -104,3 +102,35 @@ def verify_user(*, email: str, password: str) -> AuthUser:
     if not pwd_context.verify(password, user.password_hash):
         raise AuthUserError("Invalid email or password")
     return user
+
+def get_or_create_user_from_google(*, email: str, name: str, google_id: str) -> AuthUser:
+    # Check if user already exists (could be an email/password account)
+    existing_user = get_user_by_email(email)
+    
+    if existing_user:
+        # User exists — return them as-is (merges Google login with existing account)
+        return existing_user
+
+    # New user — create them without a password
+    table = _table()
+    user_id = str(uuid4())
+    created_at = _now_utc()
+
+    table.put_item(
+        Item={
+            "user_id": user_id,
+            "email": email,
+            "name": name,
+            "password_hash": "",  # no password for Google users
+            "google_id": google_id,
+            "created_at": created_at,
+        }
+    )
+
+    return AuthUser(
+        user_id=user_id,
+        email=email,
+        name=name,
+        password_hash="",
+        created_at=created_at,
+    )

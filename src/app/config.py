@@ -62,6 +62,7 @@ class Settings:
     aws_sessions_table: str = "sessions"
     aws_turns_table: str = "turns"
     aws_modules_table: str = "learning_modules"
+    aws_personas_table: str = "personas"
     jwt_secret: str = ""
     jwt_exp_minutes: int = 60
     log_level: str = "INFO"
@@ -120,6 +121,7 @@ def get_settings() -> Settings:
         aws_sessions_table=_env("AWS_SESSIONS_TABLE", "sessions"),
         aws_turns_table=_env("AWS_TURNS_TABLE", "turns"),
         aws_modules_table=_env("AWS_MODULES_TABLE", "learning_modules"),
+        aws_personas_table=_env("AWS_PERSONAS_TABLE", "personas"),
         jwt_secret=_env("JWT_SECRET"),
         jwt_exp_minutes=int(_env("JWT_EXP_MINUTES", "60")),
         log_level=_env("LOG_LEVEL", "INFO"),
