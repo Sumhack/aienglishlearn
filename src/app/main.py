@@ -5,7 +5,7 @@ from typing import Literal
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr, Field, field_validator
-
+from app.auth.google import router as google_router
 from app.config import get_settings, validate_required_env
 from app.auth.jwt_utils import create_jwt_token, decode_jwt_token
 from app.auth.user_store import AuthUserError, create_user, verify_user
@@ -18,6 +18,7 @@ from app.services.session_service import (
     get_session_by_id,
     list_sessions_for_user,
     list_personas,
+    list_personas_v1,
     list_turn_items,
     update_session_summary,
 )
@@ -37,6 +38,8 @@ class SessionStartResponse(BaseModel):
     session_id: str
     user_id: str
     persona: str
+    display_name: str
+    coach_type: str
     room_name: str
     token: str
     livekit_url: str
@@ -62,6 +65,8 @@ class SessionDetailResponse(BaseModel):
     session_id: str
     user_id: str
     persona: str
+    display_name: str
+    coach_type: str
     room_name: str
     status: str
     created_at: str
@@ -72,14 +77,17 @@ class SessionDetailResponse(BaseModel):
     grammar_score: float | None
     vocabulary_score: float | None
     clarity_score: float | None
+    relevance_score: float | None
     report_status: str | None
     summary: dict | None
-    recordings: dict | None
+    # recordings: dict | None
 
 
 class SessionListItemResponse(BaseModel):
     session_id: str
     persona: str
+    display_name: str
+    coach_type: str
     room_name: str
     status: str
     created_at: str
@@ -90,6 +98,7 @@ class SessionListItemResponse(BaseModel):
     grammar_score: float | None
     vocabulary_score: float | None
     clarity_score: float | None
+    relevance_score: float | None
     report_status: str | None
 
 
@@ -97,12 +106,22 @@ class PersonaResponse(BaseModel):
     module_key: str
     module_name: str
     display_name: str
+    coach_type: str
     role: str
     tone: str
     short_description: str
     is_active: bool
     created_at: str | None
     updated_at: str | None
+
+
+class PersonaV1Response(BaseModel):
+    module_key: str
+    coach_category: str
+    coach_type: str
+    display_name: str
+    short_description: str
+    tone: str
 
 
 class SessionFinalizeResponse(BaseModel):
@@ -134,10 +153,10 @@ class AuthResponse(BaseModel):
 
 
 app = FastAPI(title="Voice Agent Backend", version="0.1.0")
-
+app.include_router(google_router)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "https://www.speakaura.tech",],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -193,6 +212,8 @@ async def start_session(
         session_id=result.session_id,
         user_id=result.user_id,
         persona=result.persona,
+        display_name=result.display_name,
+        coach_type=result.coach_type,
         room_name=result.room_name,
         token=result.token,
         livekit_url=result.livekit_url,
@@ -282,6 +303,8 @@ async def get_session(
         session_id=session.session_id,
         user_id=session.user_id,
         persona=session.persona,
+        display_name=session.display_name,
+        coach_type=session.coach_type,
         room_name=session.room_name,
         status=session.status,
         created_at=session.created_at,
@@ -292,9 +315,10 @@ async def get_session(
         grammar_score=float(session.grammar_score) if session.grammar_score is not None else None,
         vocabulary_score=float(session.vocabulary_score) if session.vocabulary_score is not None else None,
         clarity_score=float(session.clarity_score) if session.clarity_score is not None else None,
+        relevance_score=float(session.relevance_score) if session.relevance_score is not None else None,
         report_status=session.report_status,
         summary=session.summary_json,
-        recordings=session.recordings_json,
+        # recordings=session.recordings_json,
     )
 
 
@@ -320,6 +344,8 @@ async def list_sessions(
         SessionListItemResponse(
             session_id=s.session_id,
             persona=s.persona,
+            display_name=s.display_name,
+            coach_type=s.coach_type,
             room_name=s.room_name,
             status=s.status,
             created_at=s.created_at,
@@ -330,6 +356,7 @@ async def list_sessions(
             grammar_score=s.grammar_score,
             vocabulary_score=s.vocabulary_score,
             clarity_score=s.clarity_score,
+            relevance_score=s.relevance_score,
             report_status=s.report_status,
         )
         for s in sessions
@@ -344,12 +371,29 @@ async def get_personas(active_only: bool = True) -> list[PersonaResponse]:
             module_key=p.module_key,
             module_name=p.module_name,
             display_name=p.display_name,
+            coach_type=p.coach_type,
             role=p.role,
             tone=p.tone,
             short_description=p.short_description,
             is_active=p.is_active,
             created_at=p.created_at,
             updated_at=p.updated_at,
+        )
+        for p in personas
+    ]
+
+
+@app.get("/personas_v1", response_model=list[PersonaV1Response])
+async def get_personas_v1() -> list[PersonaV1Response]:
+    personas = list_personas_v1()
+    return [
+        PersonaV1Response(
+            module_key=p.module_key,
+            coach_category=p.coach_category,
+            coach_type=p.coach_type,
+            display_name=p.display_name,
+            short_description=p.short_description,
+            tone=p.tone,
         )
         for p in personas
     ]
@@ -391,6 +435,7 @@ async def finalize_session(
         summary = {
             "strengths": result.strengths,
             "improvements": result.improvements,
+            "content_improvements": result.content_improvements,
             "practice_tasks": result.practice_tasks,
             "corrections": result.corrections,
             "notes": result.notes,
@@ -405,7 +450,14 @@ async def finalize_session(
         logging.exception("Deep eval failed for session %s", session_id)
         update_session_summary(
             session_id=session_id,
-            scores={"overall": 0, "fluency": 0, "grammar": 0, "vocabulary": 0, "clarity": 0},
+            scores={
+                "overall": 0,
+                "fluency": 0,
+                "grammar": 0,
+                "vocabulary": 0,
+                "clarity": 0,
+                "relevance": 0,
+            },
             summary={"error": str(exc)},
             report_status="failed",
         )

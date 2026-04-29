@@ -13,6 +13,7 @@ class DeepEvalResult:
     scores: dict[str, float]
     strengths: list[str]
     improvements: list[str]
+    content_improvements: list[dict[str, str]]
     practice_tasks: list[str]
     corrections: list[dict[str, str]]
     notes: str
@@ -140,7 +141,7 @@ def run_deep_eval_bedrock(prompt: str) -> DeepEvalResult:
         ],
         inferenceConfig={
             "temperature": 0.2,
-            "maxTokens": 1200,
+            "maxTokens": 1600,
         },
     )
 
@@ -163,9 +164,11 @@ def run_deep_eval_bedrock(prompt: str) -> DeepEvalResult:
             "grammar": float(scores.get("grammar", 0)),
             "vocabulary": float(scores.get("vocabulary", 0)),
             "clarity": float(scores.get("clarity", 0)),
+            "relevance": float(scores.get("relevance", 0)),
         },
         strengths=list(data.get("strengths", [])),
         improvements=list(data.get("improvements", [])),
+        content_improvements=list(data.get("content_improvements", [])),
         practice_tasks=list(data.get("practice_tasks", [])),
         corrections=list(data.get("corrections", [])),
         notes=str(data.get("notes", "")),
