@@ -8,3 +8,4 @@ mangum~=0.17
 python-dotenv
 livekit-api~=1.1
 httpx
+structlog
