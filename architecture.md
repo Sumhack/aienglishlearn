@@ -61,3 +61,165 @@
 - **Low Latency**: Voice interaction requires <500ms response times; architectural choices like LiveKit and optimized LLM prompts are used to meet this.
 - **High Concurrency**: Designed for serverless scaling (AWS Lambda) and distributed real-time handling (LiveKit).
 - **Cost Sensitive**: Tracks token usage and estimated USD cost per conversation turn.
+
+# Observability
+
+## Structured Logging v1
+All services must emit JSON logs using a shared schema. Logs are append-only events and should be emitted at boundaries and state transitions, not on every internal line of execution.
+
+### Required Envelope
+```json
+{
+  "timestamp": "2026-05-02T12:34:56.789Z",
+  "schema_version": "v1",
+  "event": "session.started",
+  "status": "started",
+  "level": "INFO",
+  "service": "api",
+  "source": "api",
+  "trace_id": "01HZY....",
+  "session_id": "sess_123",
+  "user_id": "user_123",
+  "turn_id": null,
+  "turn_index": null,
+  "learning_module_id": "mod_123",
+  "persona": "behavioral_interview",
+  "region": "us-east-1",
+  "environment": "production",
+  "model_name": null,
+  "duration_ms": null,
+  "error_type": null,
+  "error_stage": null,
+  "severity": null,
+  "message": "Session created",
+  "metadata": {
+    "component": "session_service",
+    "operation": "create_session",
+    "retry_count": 0,
+    "table": "sessions",
+    "latency_breakdown": {}
+  }
+}
+```
+
+### Required Fields
+- `timestamp`
+- `schema_version`
+- `event`
+- `status`
+- `level`
+- `service`
+- `source`
+- `trace_id`
+
+### Correlation Fields
+- `session_id`
+- `user_id`
+- `turn_id`
+- `turn_index`
+- `learning_module_id`
+- `persona`
+
+### Operational Fields
+- `region`
+- `environment`
+- `model_name`
+- `duration_ms`
+- `message`
+
+### Error Fields
+- `error_type`
+- `error_stage`
+- `severity`
+
+### Metadata Contract
+`metadata` is for non-core context that may vary by service. Do not depend on metadata for primary analytics if the value needs to be queried often.
+
+Recommended metadata keys:
+- `component`
+- `operation`
+- `retry_count`
+- `table`
+- `latency_breakdown`
+
+### Event Taxonomy
+Event names are strict and must be validated in code. Do not emit arbitrary event strings.
+
+#### Session
+- `session.started`
+- `session.completed`
+- `session.failed`
+
+#### Turn
+- `turn.started`
+- `turn.completed`
+- `turn.failed`
+
+#### STT
+- `stt.started`
+- `stt.completed`
+- `stt.failed`
+
+#### LLM
+- `llm.request`
+- `llm.response`
+- `llm.failed`
+
+#### TTS
+- `tts.started`
+- `tts.completed`
+- `tts.failed`
+
+#### Evaluation
+- `evaluation.started`
+- `evaluation.completed`
+- `evaluation.failed`
+
+#### DB
+- `db.read.started`
+- `db.read.completed`
+- `db.read.failed`
+- `db.write.started`
+- `db.write.completed`
+- `db.write.failed`
+
+#### Auth
+- `auth.success`
+- `auth.failed`
+
+### Error Taxonomy
+Use bounded values for failure analysis in Athena.
+
+#### `error_type`
+- `validation`
+- `auth`
+- `timeout`
+- `dependency`
+- `not_found`
+- `rate_limit`
+- `internal`
+
+#### `error_stage`
+- `ingest`
+- `session_start`
+- `turn_infer`
+- `tool_call`
+- `persist`
+- `evaluation`
+- `auth`
+- `db`
+
+#### `severity`
+- `low`
+- `medium`
+- `high`
+- `critical`
+
+### Logging Rules
+- Emit one log per significant boundary or state transition.
+- Keep `event` stable and machine-readable.
+- Keep `message` human-readable and optional.
+- Prefer top-level fields for commonly queried data.
+- Use `trace_id` for request/turn correlation and `session_id` for full journey correlation.
+- Redact secrets, access tokens, raw credentials, and other sensitive payloads.
+- Add `schema_version` when the shape changes, not when a message changes.

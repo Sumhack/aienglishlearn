@@ -1,5 +1,4 @@
 import asyncio
-import logging
 import time
 import urllib.request
 from dataclasses import dataclass, field
@@ -18,6 +17,34 @@ from livekit.agents.voice.events import ConversationItemAddedEvent, MetricsColle
 from app.config import get_settings, validate_required_env
 from app.curricula.loader import load_curriculum
 from app.eval.fast_metrics import compute_fast_metrics
+from app.logging.events import (
+    AGENT_SESSION_CONFIGURED,
+    DB_WRITE_FAILED,
+    LLM_FAILED,
+    LLM_REQUEST,
+    LLM_RESPONSE,
+    PARTICIPANT_CONNECTED,
+    SESSION_COMPLETED,
+    SESSION_FINALIZATION_COMPLETED,
+    SESSION_FINALIZATION_FAILED,
+    SESSION_FINALIZATION_STARTED,
+    SESSION_FAILED,
+    SESSION_STARTED,
+    STT_FAILED,
+    STT_STARTED,
+    TRACK_EGRESS_FAILED,
+    TRACK_PUBLISHED,
+    TURN_COMPLETED,
+    TURN_FAILED,
+    TURN_STARTED,
+    TTS_FAILED,
+    TTS_STARTED,
+    WARMUP_COMPLETED,
+    WARMUP_FAILED,
+    WARMUP_STARTED,
+)
+from app.logging.context import ensure_trace_id
+from app.logging.wrapper import bind_context, log_boundary, log_error
 from app.services.session_service import (
     SessionServiceError,
     add_turn_usage,
@@ -106,7 +133,13 @@ async def _warmup_models(llm_engine: object, tts_engine: object) -> None:
         if _warmup_done:
             return
         try:
-            logging.info("Warmup: starting")
+            log_boundary(
+                event=WARMUP_STARTED,
+                status="started",
+                message="Warmup started",
+                component="livekit.agent",
+                operation="warmup",
+            )
             if hasattr(llm_engine, "chat"):
                 ctx = ChatContext()
                 ctx.add_message(role="user", content="Say OK.")
@@ -115,9 +148,25 @@ async def _warmup_models(llm_engine: object, tts_engine: object) -> None:
                 async for _chunk in tts_engine.synthesize("OK"):
                     pass
             _warmup_done = True
-            logging.info("Warmup: completed")
-        except Exception:
-            logging.exception("Warmup: failed")
+            log_boundary(
+                event=WARMUP_COMPLETED,
+                status="completed",
+                message="Warmup completed",
+                component="livekit.agent",
+                operation="warmup",
+            )
+        except Exception as exc:
+            log_error(
+                event=WARMUP_FAILED,
+                status="failed",
+                message="Warmup failed",
+                component="livekit.agent",
+                operation="warmup",
+                error_type="internal",
+                error_stage="tool_call",
+                severity="medium",
+                error_message=str(exc),
+            )
 
 
 server = AgentServer(num_idle_processes=1)
@@ -138,8 +187,9 @@ async def my_agent(ctx: agents.JobContext) -> None:
         "session_intro_prompt",
         "Greet the learner and explain the session.",
     )
-    questions = curriculum.questions.get("questions", [])
-    first_question = questions[0]["text"] if questions else "Tell me about yourself."
+    # questions = curriculum.questions.get("questions", [])
+    # first_question = questions[0]["text"] if questions else "Tell me about yourself."
+    first_question = "Tell me about yourself."
     max_turns = curriculum.questions.get("max_turns", 10)
     turn_tracker: TurnTracker | None = None
     if session_row:
@@ -148,6 +198,19 @@ async def my_agent(ctx: agents.JobContext) -> None:
             question_text=first_question,
             next_index=next_turn_index(session_row.session_id),
             max_turns=max_turns,
+        )
+        bind_context(
+            trace_id=ensure_trace_id(),
+            session_id=turn_tracker.session_id,
+            persona=persona,
+        )
+        log_boundary(
+            event=SESSION_STARTED,
+            status="started",
+            message="Worker joined session",
+            session_id=turn_tracker.session_id,
+            persona=persona,
+            duration_ms=0,
         )
 
     persona_tts = curriculum.prompts.get("tts_voice") or settings.agent_tts
@@ -192,17 +255,36 @@ async def my_agent(ctx: agents.JobContext) -> None:
     # },
     )
     # asyncio.create_task(_warmup_models(llm_engine, tts_engine))
+    log_boundary(
+        event=AGENT_SESSION_CONFIGURED,
+        status="started",
+        message="Agent session configured",
+        session_id=turn_tracker.session_id if turn_tracker else None,
+        persona=persona,
+        model_name="deepgram/flux-general-en",
+    )
 
     async def _finalize_session(reason: str) -> None:
         if not turn_tracker:
             return
         if not settings.backend_base_url:
-            logging.warning("Finalize skipped (%s): BACKEND_BASE_URL not set", reason)
+            log_error(
+                event=SESSION_FAILED,
+                status="failed",
+                message="Finalize skipped because BACKEND_BASE_URL is not set",
+                session_id=turn_tracker.session_id,
+                error_type="dependency",
+                error_stage="persist",
+                severity="medium",
+                reason=reason,
+            )
             return
-        logging.info(
-            "Finalize start (%s): session_id=%s",
-            reason,
-            turn_tracker.session_id,
+        log_boundary(
+            event=SESSION_FINALIZATION_STARTED,
+            status="started",
+            message="Finalize request started",
+            session_id=turn_tracker.session_id,
+            reason=reason,
         )
         url = f"{settings.backend_base_url.rstrip('/')}/sessions/{turn_tracker.session_id}/finalize"
         headers = {"Content-Type": "application/json"}
@@ -212,27 +294,48 @@ async def my_agent(ctx: agents.JobContext) -> None:
         def _do_request() -> None:
             req = urllib.request.Request(url, method="POST", headers=headers)
             with urllib.request.urlopen(req, timeout=30) as resp:
-                logging.info(
-                    "Finalize response (%s): session_id=%s status=%s",
-                    reason,
-                    turn_tracker.session_id,
-                    getattr(resp, "status", "unknown"),
+                log_boundary(
+                    event=SESSION_FINALIZATION_COMPLETED,
+                    status="completed",
+                    message="Session finalize completed",
+                    session_id=turn_tracker.session_id,
+                    reason=reason,
+                    status_code=getattr(resp, "status", "unknown"),
+                )
+                log_boundary(
+                    event=SESSION_COMPLETED,
+                    status="completed",
+                    message="Session completed",
+                    session_id=turn_tracker.session_id,
+                    reason=reason,
                 )
                 return
 
         try:
             await asyncio.to_thread(_do_request)
-        except Exception:
-            logging.exception("Finalize call failed (%s)", reason)
+        except Exception as exc:
+            log_error(
+                event=SESSION_FINALIZATION_FAILED,
+                status="failed",
+                message="Finalize request failed",
+                session_id=turn_tracker.session_id,
+                reason=reason,
+                error_type="dependency",
+                error_stage="persist",
+                severity="high",
+                error_message=str(exc),
+            )
 
     def _schedule_finalize(reason: str) -> None:
         if not turn_tracker or turn_tracker.finalize_called:
             return
         turn_tracker.finalize_called = True
-        logging.info(
-            "Finalize scheduled (%s): session_id=%s",
-            reason,
-            turn_tracker.session_id,
+        log_boundary(
+            event=SESSION_FINALIZATION_STARTED,
+            status="started",
+            message="Finalize scheduled",
+            session_id=turn_tracker.session_id,
+            reason=reason,
         )
         asyncio.create_task(_finalize_session(reason))
 
@@ -289,8 +392,18 @@ async def my_agent(ctx: agents.JobContext) -> None:
                 key=key,
                 value=f"s3://{settings.egress_s3_bucket}/{resolved_path}",
             )
-        except Exception:
-            logging.exception("Failed to start egress for %s", key)
+        except Exception as exc:
+            log_error(
+                event=TRACK_EGRESS_FAILED,
+                status="failed",
+                message="Failed to start egress",
+                session_id=turn_tracker.session_id,
+                error_type="dependency",
+                error_stage="persist",
+                severity="medium",
+                key=key,
+                error_message=str(exc),
+            )
 
     def on_conversation_item_added(ev: ConversationItemAddedEvent) -> None:
         if not turn_tracker:
@@ -311,6 +424,14 @@ async def my_agent(ctx: agents.JobContext) -> None:
             idx = turn_tracker.next_index
             turn_tracker.next_index += 1
             question_text = turn_tracker.question_text if not turn_tracker.intro_logged else ""
+            log_boundary(
+                event=TURN_STARTED,
+                status="started",
+                message="Assistant turn started",
+                session_id=turn_tracker.session_id,
+                turn_index=idx,
+                duration_ms=0,
+            )
             create_turn(
                 session_id=turn_tracker.session_id,
                 turn_index=idx,
@@ -322,9 +443,13 @@ async def my_agent(ctx: agents.JobContext) -> None:
             turn_tracker.assistant_ts = ev.created_at
             turn_tracker.last_assistant_index = idx
             if not turn_tracker.intro_logged:
-                logging.info(
-                    "Latency: first assistant message created at %.3fs",
-                    time.monotonic() - start_ts,
+                log_boundary(
+                    event=LLM_RESPONSE,
+                    status="completed",
+                    message="First assistant message created",
+                    session_id=turn_tracker.session_id,
+                    turn_index=idx,
+                    latency_ms=int((time.monotonic() - start_ts) * 1000),
                 )
                 turn_tracker.intro_sent = True
                 turn_tracker.intro_logged = True
@@ -339,6 +464,14 @@ async def my_agent(ctx: agents.JobContext) -> None:
                 session_id=turn_tracker.session_id,
                 turn_index=idx,
                 user_transcript=text,
+                duration_ms=duration_ms,
+            )
+            log_boundary(
+                event=TURN_COMPLETED,
+                status="completed",
+                message="User transcript captured",
+                session_id=turn_tracker.session_id,
+                turn_index=idx,
                 duration_ms=duration_ms,
             )
             turn_tracker.pending_turn_index = None
@@ -357,8 +490,18 @@ async def my_agent(ctx: agents.JobContext) -> None:
                             "avg_words_per_sentence": metrics.avg_words_per_sentence,
                         },
                     )
-                except Exception:  # pragma: no cover - runtime logging
-                    logging.exception("fast metrics write failed")
+                except Exception as exc:  # pragma: no cover - runtime logging
+                    log_error(
+                        event=DB_WRITE_FAILED,
+                        status="failed",
+                        message="Fast metrics write failed",
+                        session_id=turn_tracker.session_id,
+                        turn_index=idx,
+                        error_type="dependency",
+                        error_stage="persist",
+                        severity="medium",
+                        error_message=str(exc),
+                    )
                 
             asyncio.create_task(_persist_fast_metrics())
             # if idx >= turn_tracker.max_turns:
@@ -379,6 +522,14 @@ async def my_agent(ctx: agents.JobContext) -> None:
 
         metrics = ev.metrics
         if isinstance(metrics, LLMMetrics):
+            log_boundary(
+                event=LLM_REQUEST,
+                status="started",
+                message="LLM metrics collected",
+                session_id=turn_tracker.session_id,
+                turn_index=turn_index,
+                model_name=metrics.metadata.model_name if metrics.metadata else None,
+            )
             add_turn_usage(
                 session_id=turn_tracker.session_id,
                 turn_index=turn_index,
@@ -387,7 +538,23 @@ async def my_agent(ctx: agents.JobContext) -> None:
                 total_tokens=metrics.total_tokens,
                 model_name=metrics.metadata.model_name if metrics.metadata else None,
             )
+            log_boundary(
+                event=LLM_RESPONSE,
+                status="completed",
+                message="LLM response recorded",
+                session_id=turn_tracker.session_id,
+                turn_index=turn_index,
+                latency_ms=0,
+            )
         elif isinstance(metrics, RealtimeModelMetrics):
+            log_boundary(
+                event=STT_STARTED,
+                status="started",
+                message="Realtime metrics collected",
+                session_id=turn_tracker.session_id,
+                turn_index=turn_index,
+                model_name=metrics.metadata.model_name if metrics.metadata else None,
+            )
             add_turn_usage(
                 session_id=turn_tracker.session_id,
                 turn_index=turn_index,
@@ -413,7 +580,13 @@ async def my_agent(ctx: agents.JobContext) -> None:
         agent=Assistant(instructions=assistant_prompt),
         # record=True,
     )
-    logging.info("Latency: session.start completed in %.3fs", time.monotonic() - start_ts)
+    log_boundary(
+        event=SESSION_STARTED,
+        status="completed",
+        message="Session start completed",
+        session_id=turn_tracker.session_id if turn_tracker else None,
+        latency_ms=int((time.monotonic() - start_ts) * 1000),
+    )
     if turn_tracker:
         session_detail = get_session_by_id(turn_tracker.session_id)
         if session_detail:
@@ -454,21 +627,31 @@ async def my_agent(ctx: agents.JobContext) -> None:
     def on_track_published(publication, remote_participant) -> None:
         if not turn_tracker or turn_tracker.closed:
             return
-        logging.info(
-            "track_published: identity=%s kind=%s sid=%s",
-            getattr(remote_participant, "identity", ""),
-            publication.kind,
-            publication.sid,
+        log_boundary(
+            event=TRACK_PUBLISHED,
+            status="started",
+            message="Track published",
+            session_id=turn_tracker.session_id,
+            metadata={
+                "turn_index": turn_tracker.last_assistant_index,
+                "track_sid": publication.sid,
+                "participant_identity": getattr(remote_participant, "identity", ""),
+            },
         )
         _start_user_for_publication(publication, remote_participant)
 
     def on_participant_connected(participant) -> None:
         if not turn_tracker or turn_tracker.closed:
             return
-        logging.info(
-            "participant_connected: identity=%s tracks=%d",
-            getattr(participant, "identity", ""),
-            len(participant.track_publications),
+        log_boundary(
+            event=PARTICIPANT_CONNECTED,
+            status="started",
+            message="Participant connected",
+            session_id=turn_tracker.session_id,
+            metadata={
+                "participant_identity": getattr(participant, "identity", ""),
+                "track_count": len(participant.track_publications),
+            },
         )
         for publication in participant.track_publications.values():
             _start_user_for_publication(publication, participant)
@@ -476,14 +659,26 @@ async def my_agent(ctx: agents.JobContext) -> None:
     ctx.room.on("track_published", on_track_published)
     ctx.room.on("participant_connected", on_participant_connected)
 
-    logging.info("Latency: calling initial generate_reply at %.3fs", time.monotonic() - start_ts)
+    log_boundary(
+        event=LLM_REQUEST,
+        status="started",
+        message="Initial generate_reply started",
+        session_id=turn_tracker.session_id if turn_tracker else None,
+        latency_ms=int((time.monotonic() - start_ts) * 1000),
+    )
     await session.generate_reply(
         instructions=(
             f"{intro_prompt} "
             f"Then ask the first interview question exactly: '{first_question}'"
         ),
     )
-    logging.info("Latency: initial generate_reply completed at %.3fs", time.monotonic() - start_ts)
+    log_boundary(
+        event=LLM_RESPONSE,
+        status="completed",
+        message="Initial generate_reply completed",
+        session_id=turn_tracker.session_id if turn_tracker else None,
+        latency_ms=int((time.monotonic() - start_ts) * 1000),
+    )
 
     if turn_tracker:
         for participant in ctx.room.remote_participants.values():
@@ -492,12 +687,18 @@ async def my_agent(ctx: agents.JobContext) -> None:
 
 def main() -> None:
     validate_required_env(["livekit", "models"])
-    settings = get_settings()
-    logging.basicConfig(level=settings.log_level)
+    get_settings()
     try:
         agents.cli.run_app(server)
     except SessionServiceError:
-        logging.exception("session persistence failure in worker")
+        log_error(
+            event=SESSION_FAILED,
+            status="failed",
+            message="Session persistence failure in worker",
+            error_type="dependency",
+            error_stage="persist",
+            severity="high",
+        )
         raise
 
 

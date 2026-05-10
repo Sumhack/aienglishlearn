@@ -1,0 +1,2 @@
+"""Shared structured logging utilities."""
+

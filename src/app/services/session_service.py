@@ -176,8 +176,20 @@ def _personas_table():
 
 
 def _get_learning_module(*, persona: str) -> dict:
-    table = _modules_table()
-    item = table.get_item(Key={"module_key": persona}).get("Item")
+    table = _personas_table()
+    # personas table uses composite PK (coach_type, module_key),
+    # so look up by module_key via scan for now.
+    item = None
+    scan_kwargs = {"FilterExpression": Attr("module_key").eq(persona)}
+    response = table.scan(**scan_kwargs)
+    items = response.get("Items", [])
+    if items:
+        item = items[0]
+    while not item and response.get("LastEvaluatedKey"):
+        response = table.scan(ExclusiveStartKey=response["LastEvaluatedKey"], **scan_kwargs)
+        items = response.get("Items", [])
+        if items:
+            item = items[0]
     if not item:
         raise SessionServiceError(f"Persona '{persona}' not found in learning_modules")
     return item
