@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-import logging
+import time
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Header
@@ -11,6 +11,18 @@ from app.auth.jwt_utils import create_jwt_token, decode_jwt_token
 from app.auth.user_store import AuthUserError, create_user, verify_user
 from app.eval.deep_eval_worker import run_deep_eval
 from app.eval.prompts import build_session_eval_prompt
+from app.logging.events import (
+    AUTH_FAILED,
+    AUTH_SUCCESS,
+    EVALUATION_COMPLETED,
+    EVALUATION_FAILED,
+    EVALUATION_STARTED,
+    SESSION_FAILED,
+    SESSION_STARTED,
+)
+from app.logging.logger import configure_logging
+from app.logging.wrapper import bind_context, log_boundary, log_error
+from app.middleware.logging_middleware import LoggingMiddleware
 from app.services.session_service import (
     SessionServiceError,
     SessionStartPayload,
@@ -153,6 +165,8 @@ class AuthResponse(BaseModel):
 
 
 app = FastAPI(title="Voice Agent Backend", version="0.1.0")
+configure_logging()
+app.add_middleware(LoggingMiddleware)
 app.include_router(google_router)
 app.add_middleware(
     CORSMiddleware,
@@ -184,18 +198,50 @@ async def start_session(
     payload: SessionStartRequest,
     authorization: str | None = Header(default=None),
 ) -> SessionStartResponse:
+    start_ts = time.monotonic()
     if not authorization or not authorization.startswith("Bearer "):
+        log_error(
+            event=AUTH_FAILED,
+            status="failed",
+            message="Missing or invalid Authorization header",
+            error_type="auth",
+            error_stage="auth",
+            severity="medium",
+            status_code=401,
+            error_message="Missing or invalid Authorization header",
+        )
         raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
     token = authorization.removeprefix("Bearer ").strip()
     try:
         claims = decode_jwt_token(token)
     except Exception as exc:
+        log_error(
+            event=AUTH_FAILED,
+            status="failed",
+            message="Invalid token",
+            error_type="auth",
+            error_stage="auth",
+            severity="medium",
+            status_code=401,
+            error_message=str(exc),
+        )
         raise HTTPException(status_code=401, detail="Invalid token") from exc
 
     user_id = claims.get("sub")
     name = claims.get("name")
     if not user_id or not name:
+        log_error(
+            event=AUTH_FAILED,
+            status="failed",
+            message="Token missing user details",
+            error_type="auth",
+            error_stage="auth",
+            severity="medium",
+            status_code=401,
+            error_message="Token missing user details",
+        )
         raise HTTPException(status_code=401, detail="Token missing user details")
+    bind_context(user_id=user_id)
 
     try:
         result = create_session(
@@ -206,7 +252,27 @@ async def start_session(
             )
         )
     except SessionServiceError as exc:
+        log_error(
+            event=SESSION_FAILED,
+            status="failed",
+            message="Session start failed",
+            error_type="dependency",
+            error_stage="session_start",
+            severity="high",
+            error_message=str(exc),
+        )
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    bind_context(session_id=result.session_id, persona=result.persona)
+
+    log_boundary(
+        event=SESSION_STARTED,
+        status="started",
+        message="Session created",
+        session_id=result.session_id,
+        user_id=result.user_id,
+        persona=result.persona,
+        duration_ms=int((time.monotonic() - start_ts) * 1000),
+    )
 
     return SessionStartResponse(
         session_id=result.session_id,
@@ -227,12 +293,28 @@ async def register(payload: RegisterRequest) -> AuthResponse:
     try:
         user = create_user(name=payload.name, email=payload.email, password=payload.password)
     except AuthUserError as exc:
+        log_error(
+            event=AUTH_FAILED,
+            status="failed",
+            message="Registration failed",
+            error_type="validation",
+            error_stage="auth",
+            severity="medium",
+            error_message=str(exc),
+            status_code=409,
+        )
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     token, expires_in = create_jwt_token(
         user_id=user.user_id,
         email=user.email,
         name=user.name,
+    )
+    log_boundary(
+        event=AUTH_SUCCESS,
+        status="success",
+        message="Registration succeeded",
+        user_id=user.user_id,
     )
     return AuthResponse(
         user_id=user.user_id,
@@ -260,12 +342,28 @@ async def login(payload: LoginRequest) -> AuthResponse:
     try:
         user = verify_user(email=payload.email, password=payload.password)
     except AuthUserError as exc:
+        log_error(
+            event=AUTH_FAILED,
+            status="failed",
+            message="Login failed",
+            error_type="auth",
+            error_stage="auth",
+            severity="medium",
+            error_message=str(exc),
+            status_code=401,
+        )
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
     token, expires_in = create_jwt_token(
         user_id=user.user_id,
         email=user.email,
         name=user.name,
+    )
+    log_boundary(
+        event=AUTH_SUCCESS,
+        status="success",
+        message="Login succeeded",
+        user_id=user.user_id,
     )
     return AuthResponse(
         user_id=user.user_id,
@@ -282,22 +380,66 @@ async def get_session(
     authorization: str | None = Header(default=None),
 ) -> SessionDetailResponse:
     if not authorization or not authorization.startswith("Bearer "):
+        log_error(
+            event=AUTH_FAILED,
+            status="failed",
+            message="Missing or invalid Authorization header",
+            error_type="auth",
+            error_stage="auth",
+            severity="medium",
+            status_code=401,
+            error_message="Missing or invalid Authorization header",
+        )
         raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
     token = authorization.removeprefix("Bearer ").strip()
     try:
         claims = decode_jwt_token(token)
     except Exception as exc:
+        log_error(
+            event=AUTH_FAILED,
+            status="failed",
+            message="Invalid token",
+            error_type="auth",
+            error_stage="auth",
+            severity="medium",
+            status_code=401,
+            error_message=str(exc),
+        )
         raise HTTPException(status_code=401, detail="Invalid token") from exc
 
     user_id = claims.get("sub")
     if not user_id:
+        log_error(
+            event=AUTH_FAILED,
+            status="failed",
+            message="Token missing user details",
+            error_type="auth",
+            error_stage="auth",
+            severity="medium",
+            status_code=401,
+            error_message="Token missing user details",
+        )
         raise HTTPException(status_code=401, detail="Token missing user details")
+    bind_context(user_id=user_id, session_id=session_id)
 
     session = get_session_by_id(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     if session.user_id != user_id:
+        log_error(
+            event=AUTH_FAILED,
+            status="failed",
+            message="Forbidden access to session",
+            error_type="auth",
+            error_stage="auth",
+            severity="medium",
+            status_code=403,
+            error_message="Forbidden",
+            session_id=session_id,
+            user_id=user_id,
+        )
         raise HTTPException(status_code=403, detail="Forbidden")
+    bind_context(persona=session.persona)
 
     return SessionDetailResponse(
         session_id=session.session_id,
@@ -328,16 +470,47 @@ async def list_sessions(
     limit: int = 50,
 ) -> list[SessionListItemResponse]:
     if not authorization or not authorization.startswith("Bearer "):
+        log_error(
+            event=AUTH_FAILED,
+            status="failed",
+            message="Missing or invalid Authorization header",
+            error_type="auth",
+            error_stage="auth",
+            severity="medium",
+            status_code=401,
+            error_message="Missing or invalid Authorization header",
+        )
         raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
     token = authorization.removeprefix("Bearer ").strip()
     try:
         claims = decode_jwt_token(token)
     except Exception as exc:
+        log_error(
+            event=AUTH_FAILED,
+            status="failed",
+            message="Invalid token",
+            error_type="auth",
+            error_stage="auth",
+            severity="medium",
+            status_code=401,
+            error_message=str(exc),
+        )
         raise HTTPException(status_code=401, detail="Invalid token") from exc
 
     user_id = claims.get("sub")
     if not user_id:
+        log_error(
+            event=AUTH_FAILED,
+            status="failed",
+            message="Token missing user details",
+            error_type="auth",
+            error_stage="auth",
+            severity="medium",
+            status_code=401,
+            error_message="Token missing user details",
+        )
         raise HTTPException(status_code=401, detail="Token missing user details")
+    bind_context(user_id=user_id)
 
     sessions = list_sessions_for_user(user_id, limit=limit)
     return [
@@ -405,31 +578,87 @@ async def finalize_session(
     authorization: str | None = Header(default=None),
     x_internal_key: str | None = Header(default=None),
 ) -> SessionFinalizeResponse:
+    eval_start_ts = time.monotonic()
     settings = get_settings()
     user_id: str | None = None
     if settings.internal_api_key and x_internal_key == settings.internal_api_key:
         user_id = "internal"
+        bind_context(user_id=user_id, session_id=session_id)
     else:
         if not authorization or not authorization.startswith("Bearer "):
+            log_error(
+                event=AUTH_FAILED,
+                status="failed",
+                message="Missing or invalid Authorization header",
+                error_type="auth",
+                error_stage="auth",
+                severity="medium",
+                status_code=401,
+                error_message="Missing or invalid Authorization header",
+                session_id=session_id,
+            )
             raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
         token = authorization.removeprefix("Bearer ").strip()
         try:
             claims = decode_jwt_token(token)
         except Exception as exc:
+            log_error(
+                event=AUTH_FAILED,
+                status="failed",
+                message="Invalid token",
+                error_type="auth",
+                error_stage="auth",
+                severity="medium",
+                status_code=401,
+                error_message=str(exc),
+                session_id=session_id,
+            )
             raise HTTPException(status_code=401, detail="Invalid token") from exc
 
         user_id = claims.get("sub")
         if not user_id:
+            log_error(
+                event=AUTH_FAILED,
+                status="failed",
+                message="Token missing user details",
+                error_type="auth",
+                error_stage="auth",
+                severity="medium",
+                status_code=401,
+                error_message="Token missing user details",
+                session_id=session_id,
+            )
             raise HTTPException(status_code=401, detail="Token missing user details")
+        bind_context(user_id=user_id, session_id=session_id)
 
     session = get_session_by_id(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     if user_id != "internal" and session.user_id != user_id:
+        log_error(
+            event=AUTH_FAILED,
+            status="failed",
+            message="Forbidden access to finalize session",
+            error_type="auth",
+            error_stage="auth",
+            severity="medium",
+            status_code=403,
+            error_message="Forbidden",
+            session_id=session_id,
+            user_id=user_id,
+        )
         raise HTTPException(status_code=403, detail="Forbidden")
+    bind_context(persona=session.persona)
 
     try:
         turn_items = list_turn_items(session_id)
+        log_boundary(
+            event=EVALUATION_STARTED,
+            status="started",
+            message="Session evaluation started",
+            session_id=session_id,
+            user_id=user_id,
+        )
         prompt = build_session_eval_prompt(session.persona, turn_items)
         result = run_deep_eval(prompt)
         summary = {
@@ -446,8 +675,26 @@ async def finalize_session(
             summary=summary,
             report_status="ready",
         )
+        log_boundary(
+            event=EVALUATION_COMPLETED,
+            status="completed",
+            message="Session evaluation completed",
+            session_id=session_id,
+            user_id=user_id,
+            duration_ms=int((time.monotonic() - eval_start_ts) * 1000),
+        )
     except Exception as exc:
-        logging.exception("Deep eval failed for session %s", session_id)
+        log_error(
+            event=EVALUATION_FAILED,
+            status="failed",
+            message="Session evaluation failed",
+            session_id=session_id,
+            user_id=user_id,
+            error_type="internal",
+            error_stage="evaluation",
+            severity="high",
+            error_message=str(exc),
+        )
         update_session_summary(
             session_id=session_id,
             scores={

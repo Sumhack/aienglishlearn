@@ -40,7 +40,7 @@ def load_curriculum(persona: str) -> CurriculumPack:
     if not selected_dir.exists():
         raise FileNotFoundError(f"Missing curriculum folder: {selected_dir}")
 
-    prompts_data = _load_json(selected_dir / "prompts.json")
+    prompts_data = _load_json(selected_dir / "prompts_v2.json")
     questions_data = _load_json(selected_dir / "questions.json")
     scoring_data = _load_json(selected_dir / "scoring.json")
 
