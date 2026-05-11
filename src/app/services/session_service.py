@@ -126,6 +126,7 @@ class PersonaV1Item:
     display_name: str
     short_description: str
     tone: str
+    image_name: str
 
 
 def _first_row(response: object) -> dict | None:
@@ -437,6 +438,7 @@ def list_personas_v1() -> list[PersonaV1Item]:
                 display_name=item.get("display_name", ""),
                 short_description=item.get("short_description", ""),
                 tone=item.get("tone", ""),
+                image_name=item.get("image_name", ""),
             )
         )
     personas.sort(

@@ -134,6 +134,7 @@ class PersonaV1Response(BaseModel):
     display_name: str
     short_description: str
     tone: str
+    image_name: str
 
 
 class SessionFinalizeResponse(BaseModel):
@@ -567,6 +568,7 @@ async def get_personas_v1() -> list[PersonaV1Response]:
             display_name=p.display_name,
             short_description=p.short_description,
             tone=p.tone,
+            image_name=p.image_name,
         )
         for p in personas
     ]
