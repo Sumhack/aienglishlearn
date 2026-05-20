@@ -24,8 +24,10 @@ from app.logging.logger import configure_logging
 from app.logging.wrapper import bind_context, log_boundary, log_error
 from app.middleware.logging_middleware import LoggingMiddleware
 from app.services.session_service import (
+    FeedbackCreatePayload,
     SessionServiceError,
     SessionStartPayload,
+    create_user_feedback,
     create_session,
     get_session_by_id,
     list_sessions_for_user,
@@ -51,12 +53,14 @@ class SessionStartResponse(BaseModel):
     user_id: str
     persona: str
     display_name: str
+    coach_category: str
     coach_type: str
     room_name: str
     token: str
     livekit_url: str
     status: Literal["active", "completed", "failed"]
     created_at: str
+    image_name: str
 
 
 class TurnResponse(BaseModel):
@@ -99,6 +103,7 @@ class SessionListItemResponse(BaseModel):
     session_id: str
     persona: str
     display_name: str
+    coach_category: str
     coach_type: str
     room_name: str
     status: str
@@ -163,6 +168,18 @@ class AuthResponse(BaseModel):
     email: EmailStr
     token: str
     expires_in: int
+
+
+class FeedbackCreateRequest(BaseModel):
+    feedback_score: int = Field(ge=1, le=10)
+    feedback_content: str = Field(min_length=1, max_length=4000)
+
+
+class FeedbackCreateResponse(BaseModel):
+    user_id: str
+    feedback_score: int
+    feedback_content: str
+    timestamp: str
 
 
 app = FastAPI(title="Voice Agent Backend", version="0.1.0")
@@ -280,12 +297,14 @@ async def start_session(
         user_id=result.user_id,
         persona=result.persona,
         display_name=result.display_name,
+        coach_category=result.coach_category,
         coach_type=result.coach_type,
         room_name=result.room_name,
         token=result.token,
         livekit_url=result.livekit_url,
         status=result.status,  # type: ignore[arg-type]
         created_at=result.created_at,
+        image_name=result.image_name,
     )
 
 
@@ -372,6 +391,43 @@ async def login(payload: LoginRequest) -> AuthResponse:
         email=user.email,
         token=token,
         expires_in=expires_in,
+    )
+
+
+@app.post("/feedback", response_model=FeedbackCreateResponse)
+async def create_feedback(
+    payload: FeedbackCreateRequest,
+    authorization: str | None = Header(default=None),
+) -> FeedbackCreateResponse:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+    token = authorization.removeprefix("Bearer ").strip()
+    try:
+        claims = decode_jwt_token(token)
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail="Invalid token") from exc
+
+    user_id = claims.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Token missing user details")
+    bind_context(user_id=user_id)
+
+    try:
+        result = create_user_feedback(
+            FeedbackCreatePayload(
+                user_id=user_id,
+                feedback_score=payload.feedback_score,
+                feedback_content=payload.feedback_content.strip(),
+            )
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to store feedback: {exc}") from exc
+
+    return FeedbackCreateResponse(
+        user_id=result.user_id,
+        feedback_score=result.feedback_score,
+        feedback_content=result.feedback_content,
+        timestamp=result.timestamp,
     )
 
 
@@ -519,6 +575,7 @@ async def list_sessions(
             session_id=s.session_id,
             persona=s.persona,
             display_name=s.display_name,
+            coach_category=s.coach_category,
             coach_type=s.coach_type,
             room_name=s.room_name,
             status=s.status,

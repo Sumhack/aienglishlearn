@@ -25,6 +25,7 @@ REQUIRED_ENV_BY_SCOPE = {
         "AWS_SESSIONS_TABLE",
         "AWS_TURNS_TABLE",
         "AWS_MODULES_TABLE",
+        "AWS_FEEDBACK_TABLE",
         "JWT_SECRET",
     ),
     "eval": (
@@ -63,6 +64,7 @@ class Settings:
     aws_turns_table: str = "turns"
     aws_modules_table: str = "learning_modules"
     aws_personas_table: str = "personas"
+    aws_feedback_table: str = "user_feedback"
     jwt_secret: str = ""
     jwt_exp_minutes: int = 60
     log_level: str = "INFO"
@@ -122,6 +124,7 @@ def get_settings() -> Settings:
         aws_turns_table=_env("AWS_TURNS_TABLE", "turns"),
         aws_modules_table=_env("AWS_MODULES_TABLE", "learning_modules"),
         aws_personas_table=_env("AWS_PERSONAS_TABLE", "personas"),
+        aws_feedback_table=_env("AWS_FEEDBACK_TABLE", "user_feedback"),
         jwt_secret=_env("JWT_SECRET"),
         jwt_exp_minutes=int(_env("JWT_EXP_MINUTES", "60")),
         log_level=_env("LOG_LEVEL", "INFO"),

@@ -220,6 +220,7 @@ async def my_agent(ctx: agents.JobContext) -> None:
     #     tts_engine = _build_cartesia_tts(persona_tts)
     llm_engine = google.LLM(
         model="gemini-3-flash-preview",
+        # max_output_tokens = 300,
     )
     tts_engine = _build_cartesia_tts(persona_tts)
     # await _warmup_models(llm_engine, tts_engine)
@@ -593,13 +594,14 @@ async def my_agent(ctx: agents.JobContext) -> None:
             def _start_agent_for_publication(publication) -> None:
                 if publication.kind != rtc.TrackKind.KIND_AUDIO:
                     return
-                asyncio.create_task(
-                    _start_track_egress(
-                        track_id=publication.sid,
-                        key="agent",
-                        user_id=session_detail.user_id,
-                    )
-                )
+                # Egress disabled intentionally.
+                # asyncio.create_task(
+                #     _start_track_egress(
+                #         track_id=publication.sid,
+                #         key="agent",
+                #         user_id=session_detail.user_id,
+                #     )
+                # )
 
             def on_local_track_published(publication, _track) -> None:
                 _start_agent_for_publication(publication)
@@ -615,14 +617,15 @@ async def my_agent(ctx: agents.JobContext) -> None:
         identity = getattr(participant, "identity", "")
         if not identity.startswith("user-"):
             return
-        user_id = identity.removeprefix("user-")
-        asyncio.create_task(
-            _start_track_egress(
-                track_id=publication.sid,
-                key="user",
-                user_id=user_id,
-            )
-        )
+        # Egress disabled intentionally.
+        # user_id = identity.removeprefix("user-")
+        # asyncio.create_task(
+        #     _start_track_egress(
+        #         track_id=publication.sid,
+        #         key="user",
+        #         user_id=user_id,
+        #     )
+        # )
 
     def on_track_published(publication, remote_participant) -> None:
         if not turn_tracker or turn_tracker.closed:

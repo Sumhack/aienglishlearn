@@ -30,11 +30,13 @@ class SessionStartResult:
     persona: str
     display_name: str
     coach_type: str
+    coach_category: str
     room_name: str
     token: str
     livekit_url: str
     status: str
     created_at: str
+    image_name: str
 
 
 @dataclass(frozen=True)
@@ -89,6 +91,7 @@ class SessionListItem:
     user_id: str
     persona: str
     display_name: str
+    coach_category: str
     coach_type: str
     room_name: str
     status: str
@@ -127,6 +130,21 @@ class PersonaV1Item:
     short_description: str
     tone: str
     image_name: str
+
+
+@dataclass(frozen=True)
+class FeedbackCreatePayload:
+    user_id: str
+    feedback_score: int
+    feedback_content: str
+
+
+@dataclass(frozen=True)
+class FeedbackCreateResult:
+    user_id: str
+    feedback_score: int
+    feedback_content: str
+    timestamp: str
 
 
 def _first_row(response: object) -> dict | None:
@@ -176,6 +194,10 @@ def _personas_table():
     return _dynamo_resource().Table(get_settings().aws_personas_table)
 
 
+def _feedback_table():
+    return _dynamo_resource().Table(get_settings().aws_feedback_table)
+
+
 def _get_learning_module(*, persona: str) -> dict:
     table = _personas_table()
     # personas table uses composite PK (coach_type, module_key),
@@ -210,6 +232,8 @@ def _create_session(
     learning_module_id: str,
     display_name: str,
     coach_type: str,
+    coach_category: str,
+    image_name: str,
 ) -> dict:
     session_id = str(uuid4())
     room_name = f"session-{session_id}"
@@ -221,11 +245,13 @@ def _create_session(
         "persona": persona,
         "display_name": display_name,
         "coach_type": coach_type,
+        "coach_category": coach_category,
         "room_name": room_name,
         "status": "active",
         "created_at": now,
         "started_at": now,
         "ended_at": None,
+        "image_name": image_name,
     }
     _sessions_table().put_item(Item=item)
     return item
@@ -255,12 +281,16 @@ def create_session(payload: SessionStartPayload) -> SessionStartResult:
     module = _get_learning_module(persona=payload.persona)
     display_name = module.get("display_name") or module.get("module_name") or payload.persona
     coach_type = module.get("coach_type") or ""
+    image_name = module.get("image_name") or ""
+    coach_category = module.get("coach_category") or ""
     session = _create_session(
         user_id=payload.user_id,
         persona=payload.persona,
         learning_module_id=module["module_key"],
         display_name=display_name,
         coach_type=coach_type,
+        coach_category=coach_category,
+        image_name=image_name,
     )
     token = _build_room_token(
         room_name=session["room_name"],
@@ -275,11 +305,13 @@ def create_session(payload: SessionStartPayload) -> SessionStartResult:
         persona=payload.persona,
         display_name=display_name,
         coach_type=coach_type,
+        coach_category=coach_category,
         room_name=session["room_name"],
         token=token,
         livekit_url=settings.livekit_url,
         status=session["status"],
         created_at=session["created_at"],
+        image_name=session["image_name"],
     )
 
 
@@ -381,6 +413,7 @@ def list_sessions_for_user(user_id: str, limit: int = 200) -> list[SessionListIt
                 user_id=item["user_id"],
                 persona=item.get("persona", ""),
                 display_name=item.get("display_name", ""),
+                coach_category=item.get("coach_category", ""),
                 coach_type=item.get("coach_type", ""),
                 room_name=item.get("room_name", ""),
                 status=item.get("status", ""),
@@ -639,4 +672,21 @@ def update_session_recording(
         UpdateExpression="SET #r.#k = :v",
         ExpressionAttributeNames={"#r": "recordings_json", "#k": key},
         ExpressionAttributeValues={":v": value},
+    )
+
+
+def create_user_feedback(payload: FeedbackCreatePayload) -> FeedbackCreateResult:
+    now = _now_utc()
+    item = {
+        "user_id": payload.user_id,
+        "timestamp": now,
+        "feedback_score": payload.feedback_score,
+        "feedback_content": payload.feedback_content,
+    }
+    _feedback_table().put_item(Item=item)
+    return FeedbackCreateResult(
+        user_id=payload.user_id,
+        feedback_score=payload.feedback_score,
+        feedback_content=payload.feedback_content,
+        timestamp=now,
     )
